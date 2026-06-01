@@ -1,0 +1,621 @@
+# Architecture Decision Records — Pint King
+
+This is an append-only log of significant design decisions. Each ADR captures **why** something is the way it is.
+
+## How to use this document
+
+- **One section per decision.** Each ADR has a stable heading (`## ADR-NNNN: Title`) and a fixed number.
+- **Append, do not edit.** Once an ADR is `Accepted`, do not change its content. If the decision changes, add a new ADR with a new number and set the old one's `Status` to `Superseded by ADR-XXXX`.
+- **Status values**: `Proposed`, `Accepted`, `Superseded`, `Deprecated`.
+- **Template** (copy when adding a new ADR):
+
+```
+## ADR-NNNN: Title
+
+Status: <Proposed | Accepted | Superseded by ADR-XXXX | Deprecated>
+Date: YYYY-MM-DD
+
+### Context
+What is the situation? What forces are at play?
+
+### Decision
+What is being decided?
+
+### Alternatives Considered
+What other options were on the table, and why were they rejected?
+
+### Consequences
+What are the trade-offs? What becomes easier? What becomes harder?
+```
+
+---
+
+## Index
+
+| ADR | Title | Status |
+|-----|-------|--------|
+| 0001 | S3-first ordering for pint creation | Accepted |
+| 0002 | DB-first ordering for pint deletion | Accepted |
+| 0003 | Active group stored on `users` table | Accepted |
+| 0004 | Removed members tracked in `group_blocks` table | Accepted |
+| 0005 | Leaderboard rank deltas via period snapshots | Accepted |
+| 0006 | MVVM + Repository pattern for iOS | Accepted |
+| 0007 | Three-tab navigation with centre "+" modal | Accepted |
+| 0008 | Custom AVFoundation camera (vs UIImagePickerController) | Accepted |
+| 0009 | URLSession + async/await (no third-party HTTP library) | Accepted |
+| 0010 | Zero third-party dependencies for MVP (iOS) | Accepted |
+| 0011 | UUID primary keys with `gen_random_uuid()` | Accepted |
+| 0012 | Offset-based pagination | Accepted |
+| 0013 | ISO 8601 UTC timestamps everywhere | Accepted |
+| 0014 | Refresh tokens stored as SHA-256 hashes, single-use rotation | Accepted |
+| 0015 | All photos stored as JPEG (HEIC and PNG converted on upload) | Accepted |
+| 0016 | Pre-signed URLs with 15-minute expiry for photo reads | Accepted |
+| 0017 | API-mediated uploads (not direct-to-S3 with pre-signed PUT URLs) | Accepted |
+| 0018 | PostgreSQL with PostGIS | Accepted |
+| 0019 | Kotlin + Spring Boot for the API | Accepted |
+| 0020 | SwiftUI targeting iOS 17+ | Accepted |
+| 0021 | Single-AZ RDS for MVP, Multi-AZ deferred | Accepted |
+| 0022 | API hosting: ECS Fargate vs App Runner | Proposed |
+| 0023 | iOS offline behaviour | Accepted |
+| 0024 | Migration tool: Flyway vs Liquibase | Proposed |
+| 0025 | Pending pints visible in My Pints only (not leaderboard) | Accepted |
+
+---
+
+## ADR-0001: S3-first ordering for pint creation
+
+Status: Accepted
+Date: 2026-05-31
+
+### Context
+Pint creation involves two non-atomic operations against two different systems: uploading a photo to S3 and inserting a row into `pint_logs`. There is no distributed transaction. We must choose which to do first, and how to handle partial failure.
+
+### Decision
+The API uploads to S3 first. Only after a successful `PutObject` does it insert the `pint_logs` row. If the DB insert fails after a successful S3 upload, the orphaned S3 object is enqueued for asynchronous cleanup by the orphan-cleanup job.
+
+### Alternatives Considered
+- **DB-first**: insert the row, then upload. Rejected because a successful insert with a failed upload leaves a row pointing to a non-existent photo — user-visible corruption (broken image).
+- **Two-phase commit or saga**: rejected as overengineered for MVP.
+- **Pre-signed PUT URL with client direct-upload**: see ADR-0017; deferred.
+
+### Consequences
+- Users never see a pint with a broken photo link.
+- Server-side file validation runs before any S3 cost is incurred.
+- Orphaned S3 objects are possible (rare). Mitigated by the cleanup job.
+- API request latency includes S3 PutObject time. Acceptable for MVP.
+
+---
+
+## ADR-0002: DB-first ordering for pint deletion
+
+Status: Accepted
+Date: 2026-05-31
+
+### Context
+Pint deletion is the inverse of creation: we must remove both the DB row and the S3 object. Same atomicity problem. We must choose ordering.
+
+### Decision
+Delete the DB row first within a transaction. After commit, dispatch an asynchronous `DeleteObject` to S3. If the S3 deletion fails, the orphan-cleanup job picks it up later.
+
+### Alternatives Considered
+- **S3-first**: rejected because a successful S3 delete with a failed DB delete leaves the user able to see the row but unable to fetch the photo — same broken-image problem as ADR-0001 in reverse.
+- **Synchronous S3 delete in the request**: rejected because it blocks the user response on S3 latency without any benefit (orphaned S3 objects are tolerated; orphaned DB rows are not).
+
+### Consequences
+- The user response returns quickly; S3 cleanup is best-effort.
+- Eventually-consistent storage state. Acceptable because the user-visible state (the DB row) is correct.
+- The orphan-cleanup job is a hard requirement.
+
+---
+
+## ADR-0003: Active group stored on `users` table
+
+Status: Accepted
+Date: 2026-05-31
+
+### Context
+Each user has a single "active group" that scopes their pint logging and home screen view. This selection must persist across sessions and devices. We must decide where to store it.
+
+### Decision
+A nullable `active_group_id` column on the `users` table, FK to `groups.id`.
+
+### Alternatives Considered
+- **Client-only (NSUbiquitousKeyValueStore or local)**: rejected because it would not survive a reinstall and would not sync across devices.
+- **Separate `user_settings` table**: rejected as over-structured for a single setting. Can be introduced later if user settings expand.
+
+### Consequences
+- One extra FK column on `users`. Negligible.
+- Invariant must be maintained: `active_group_id` must always reference a group the user is a member of, or be NULL. See Property 16 in `design/04-api.md`.
+- Fallback logic required when the active group is left or removed.
+
+---
+
+## ADR-0004: Removed members tracked in `group_blocks` table
+
+Status: Accepted
+Date: 2026-05-31
+
+### Context
+When a Group_Admin removes a member, that user must be prevented from re-joining via the same (or any) invite code. We must track this rejection somewhere.
+
+### Decision
+A separate `group_blocks` table with `(group_id, user_id, blocked_at)`. The invite-code join flow checks this table before adding a `group_members` row.
+
+### Alternatives Considered
+- **Soft-delete on `group_members` with a `status` column** ('active', 'removed', 'left'): rejected because it complicates every membership query with a status filter, and conflates two distinct concerns (current membership vs. join eligibility).
+- **No tracking**: rejected because the requirement (3.9) explicitly mandates rejecting removed members.
+
+### Consequences
+- Clean separation: `group_members` always means "currently a member".
+- Join check is one extra index lookup.
+- "Left voluntarily" vs. "removed by admin" are distinguishable: only the latter creates a `group_blocks` row.
+
+---
+
+## ADR-0005: Leaderboard rank deltas via period snapshots
+
+Status: Accepted
+Date: 2026-05-31
+
+### Context
+The leaderboard shows rank movement (delta) compared to the previous period's final ranking. We need a way to compute this efficiently.
+
+### Decision
+A `leaderboard_snapshots` table records the final rank of each member at the end of each completed period (week, month). The delta is `(snapshot rank − current rank)`. A scheduled job writes snapshots at period boundaries.
+
+### Alternatives Considered
+- **Compute on the fly from `pint_logs`**: would require scanning all logs in the prior period for every leaderboard request. Acceptable at low scale; expensive at higher counts; complicates the query.
+- **Store deltas directly**: rejected because the current rank is dynamic — only the prior snapshot is stable.
+
+### Consequences
+- One additional table and a scheduled job to maintain it.
+- Leaderboard read is a single query plus a snapshot lookup.
+- Snapshot job must be reliable; missed snapshots leave deltas null until the next period.
+
+---
+
+## ADR-0006: MVVM + Repository pattern for iOS
+
+Status: Accepted
+Date: 2026-05-31
+
+### Context
+SwiftUI does not prescribe an architecture. We need to pick one that's understandable, testable, and not over-engineered for the app's size.
+
+### Decision
+MVVM with a Repository layer. Views observe `@Observable` ViewModels; ViewModels hold screen-local state and call Repositories; Repositories own shared/global state and the network layer.
+
+### Alternatives Considered
+- **TCA (The Composable Architecture)**: powerful but heavy, third-party, and a steep learning curve for a portfolio MVP.
+- **MV (Model-View, no ViewModel)**: viable for small apps but conflates screen-local state with shared state, making testing harder.
+- **VIPER / Clean Architecture**: massive boilerplate; overkill for this app's size.
+
+### Consequences
+- Clear layering: testable ViewModels with mocked Repositories.
+- One ViewModel per screen is a convention to maintain.
+- The Repository layer is the seam for offline support (ADR-0023).
+
+---
+
+## ADR-0007: Three-tab navigation with centre "+" modal
+
+Status: Accepted
+Date: 2026-05-31
+
+### Context
+The primary user action is logging a pint. It must be reachable in one tap from anywhere in the app.
+
+### Decision
+A three-tab `TabView` with `[ Home ]  [ + ]  [ Profile ]`. The centre "+" is not a real tab; tapping it presents the camera as a `.fullScreenCover`. Dismissing returns to the previously active tab.
+
+### Alternatives Considered
+- **Floating action button**: rejected because it overlaps content (covers leaderboard rows, map pins) and is less discoverable.
+- **"+" in the navigation bar**: rejected because navigation bars are screen-local and the "+" should always be reachable.
+- **Single tab + camera button in top toolbar**: rejected for the same reason.
+
+### Consequences
+- TikTok-style pattern; familiar to users.
+- The centre-tab-as-action is a slight UX convention to learn (the "tab" doesn't navigate to a tab).
+- Profile becomes the home for everything not in the main loop (groups, settings, account).
+
+---
+
+## ADR-0008: Custom AVFoundation camera (vs UIImagePickerController)
+
+Status: Accepted
+Date: 2026-05-31
+
+### Context
+The pint logging flow requires zero confirmation between shutter tap and submission (requirement 4.5).
+
+### Decision
+Build a custom camera using AVFoundation: an `@Observable CameraModel` owning `AVCaptureSession` + `AVCapturePhotoOutput`, with a minimal `UIViewRepresentable` hosting `AVCaptureVideoPreviewLayer`.
+
+### Alternatives Considered
+- **`UIImagePickerController`**: Apple's built-in camera UI includes a retake/confirmation screen that cannot be removed. Directly violates requirement 4.5.
+- **`PHPickerViewController`**: photo library only; no live capture.
+- **Third-party camera library**: violates ADR-0010 (zero dependencies).
+
+### Consequences
+- More code to maintain (session lifecycle, error handling, permissions).
+- Full control over capture flow — no Apple-imposed UI.
+- The `UIViewRepresentable` is the smallest possible bridge (~10 lines).
+
+---
+
+## ADR-0009: URLSession + async/await (no third-party HTTP library)
+
+Status: Accepted
+Date: 2026-05-31
+
+### Context
+The app needs an HTTP client with JWT injection, 401 retry, and typed error mapping.
+
+### Decision
+Use `URLSession` directly with `async/await`. Wrap it in a thin `NetworkClient` class that handles JWT injection, refresh-on-401 retry, and error mapping.
+
+### Alternatives Considered
+- **Alamofire**: more features than needed; adds a dependency for a problem URLSession solves cleanly since iOS 15.
+- **Apollo / GraphQL client**: not applicable (REST API).
+
+### Consequences
+- One less dependency.
+- Modern Swift concurrency (no callbacks).
+- We write a small amount of plumbing (interceptor logic) ourselves.
+
+---
+
+## ADR-0010: Zero third-party dependencies for MVP (iOS)
+
+Status: Accepted
+Date: 2026-05-31
+
+### Context
+The iOS app is small enough that Apple's native frameworks cover everything. Adding dependencies introduces supply-chain risk, build complexity, and updates to manage.
+
+### Decision
+No third-party Swift packages in the MVP. SwiftUI, AVFoundation, MapKit, CoreLocation, URLSession, CoreImage, Security, and Codable cover all current needs.
+
+### Alternatives Considered
+- **Kingfisher for image caching**: rejected; `AsyncImage` + `URLCache` is sufficient.
+- **SwiftCheck for property tests**: this is a test-only dependency and may be added later. Treated as a separate decision if/when introduced.
+
+### Consequences
+- Faster build times, no SPM resolution.
+- Some marginally more verbose code in a few places (e.g. Keychain wrapper).
+- Easier portfolio story: "built with Apple-native frameworks".
+
+---
+
+## ADR-0011: UUID primary keys with `gen_random_uuid()`
+
+Status: Accepted
+Date: 2026-05-31
+
+### Context
+We need a primary key strategy for every table.
+
+### Decision
+UUID v4 generated server-side via PostgreSQL's `gen_random_uuid()` (from `pgcrypto`).
+
+### Alternatives Considered
+- **Sequential integers (BIGSERIAL)**: smaller, faster, but expose business volume in URLs and enable enumeration attacks.
+- **ULIDs**: lexicographically sortable, but require a Postgres extension or app-side generation.
+- **Client-generated UUIDs**: usable for idempotency but not needed in MVP since the API mediates all writes.
+
+### Consequences
+- Slightly larger PKs and indexes; negligible at MVP scale.
+- Safe to expose in URLs.
+- Built-in randomness sufficient for non-enumeration.
+
+---
+
+## ADR-0012: Offset-based pagination
+
+Status: Accepted
+Date: 2026-05-31
+
+### Context
+The pint history endpoint paginates results.
+
+### Decision
+Offset-based pagination with `page`, `size`, and `total` in the response envelope.
+
+### Alternatives Considered
+- **Cursor-based pagination**: better at scale and consistent across inserts, but more complex to implement and consume. Not needed for MVP traffic.
+- **Keyset pagination**: similar trade-offs to cursor.
+
+### Consequences
+- Simple to implement and document.
+- Pages can shift if rows are inserted during browsing. Acceptable for MVP.
+- May be revisited if pagination becomes a hot path (e.g. very large groups).
+
+---
+
+## ADR-0013: ISO 8601 UTC timestamps everywhere
+
+Status: Accepted
+Date: 2026-05-31
+
+### Context
+Pints are logged with timestamps that need to round-trip between the app, the API, and the DB.
+
+### Decision
+All timestamps in API requests and responses are ISO 8601 in UTC (e.g. `2024-01-15T14:30:00Z`). The DB stores `TIMESTAMPTZ`. Timezone-dependent logic (e.g. "this week" boundary) is applied at presentation time on the client *or* explicitly noted in the API contract.
+
+### Alternatives Considered
+- **Local time strings**: rejected because they break aggregation and comparison across timezones.
+- **Unix epoch integers**: viable but less human-readable when debugging.
+
+### Consequences
+- One consistent format; no parsing ambiguity.
+- The "this week" leaderboard filter currently uses ISO week in UTC (per Property 21). User-local-timezone weeks may be revisited later.
+
+---
+
+## ADR-0014: Refresh tokens stored as SHA-256 hashes, single-use rotation
+
+Status: Accepted
+Date: 2026-05-31
+
+### Context
+Refresh tokens are long-lived (30 days) and must survive token database compromise to a reasonable extent.
+
+### Decision
+Store only the SHA-256 hash of each refresh token in `refresh_tokens.token_hash`. Issue plaintext tokens to the client; verify by hashing on lookup. Each token is single-use: rotated on every successful refresh; reusing a used token invalidates the entire token family for that user (reuse-detection).
+
+### Alternatives Considered
+- **Plaintext storage**: rejected; a DB leak would expose all sessions.
+- **bcrypt/argon2**: unnecessary computational cost for high-entropy random tokens. SHA-256 of a 256-bit random token is appropriate.
+- **Long-lived non-rotating tokens**: rejected; rotation is a meaningful security improvement at low cost.
+
+### Consequences
+- DB leak does not expose usable tokens.
+- Reuse-detection is a strong signal of either a buggy client or a token theft.
+- Slightly more DB churn (insert + mark-used on every refresh).
+
+---
+
+## ADR-0015: All photos stored as JPEG (HEIC and PNG converted on upload)
+
+Status: Accepted
+Date: 2026-05-31
+
+### Context
+iOS captures HEIC by default. Some shared/library photos are PNG. Mixed formats complicate storage, processing, and bandwidth.
+
+### Decision
+Convert all uploads to JPEG before storing in S3. Conversion happens on the client (HEIC → JPEG) and the server validates the final format.
+
+### Alternatives Considered
+- **Store originals**: more storage, mixed formats downstream, and HEIC is poorly supported outside Apple platforms.
+- **Server-side conversion only**: increases API CPU load and bandwidth.
+
+### Consequences
+- Single format throughout the system.
+- Client must implement HEIC → JPEG conversion.
+- Some quality loss vs HEIC (acceptable for the use case).
+
+---
+
+## ADR-0016: Pre-signed URLs with 15-minute expiry for photo reads
+
+Status: Accepted
+Date: 2026-05-31
+
+### Context
+S3 is a private bucket. The client needs to display photos.
+
+### Decision
+The API generates pre-signed GET URLs (15-minute expiry) for each photo when a list is fetched. The client uses these URLs directly via `AsyncImage`.
+
+### Alternatives Considered
+- **Public bucket**: rejected; user photos are private.
+- **Proxy reads through the API**: doubles bandwidth and adds latency.
+- **Longer expiry (e.g. 1 hour or 24h)**: marginally less re-signing churn, but increases the window in which a leaked URL is usable.
+
+### Consequences
+- The client must handle URL refresh on long-lived screens (rare; 15 minutes is usually enough).
+- API generates URLs on every list response.
+- No public exposure of S3 contents.
+
+---
+
+## ADR-0017: API-mediated uploads (not direct-to-S3 with pre-signed PUT URLs)
+
+Status: Accepted
+Date: 2026-05-31
+
+### Context
+For uploads, we could either have the client send the photo to the API (which writes to S3) or issue a pre-signed PUT URL for direct client-to-S3 upload.
+
+### Decision
+For MVP, all uploads go through the API. The API receives the multipart body, validates type and size, and writes to S3.
+
+### Alternatives Considered
+- **Pre-signed PUT direct upload**: saves API bandwidth, but requires a presign-then-confirm flow to perform server-side validation (per requirement 7.6) and complicates the S3-first creation ordering (ADR-0001). May be reconsidered post-MVP.
+
+### Consequences
+- API bandwidth costs grow with upload volume.
+- Server-side validation is simple and synchronous.
+- The S3-first creation flow (ADR-0001) is straightforward.
+
+---
+
+## ADR-0018: PostgreSQL with PostGIS
+
+Status: Accepted
+Date: 2026-05-31
+
+### Context
+We need relational storage and geospatial queries (bounding-box for map view).
+
+### Decision
+PostgreSQL 16 with the PostGIS extension. Pint locations stored as `GEOMETRY(Point, 4326)`. Bounding-box queries use a GIST index on `location`.
+
+### Alternatives Considered
+- **PostgreSQL with native earthdistance / cube**: less capable than PostGIS for arbitrary spatial queries.
+- **MongoDB with geo indexes**: viable but introduces a second paradigm; we'd lose transactional guarantees that matter for account deletion (Property 28).
+- **DynamoDB with geo-hash sort keys**: lots of application-level glue; overkill for MVP.
+
+### Consequences
+- Single database for relational and spatial data.
+- PostGIS adds operational complexity (extension management, larger image).
+- AWS RDS supports PostGIS natively.
+
+---
+
+## ADR-0019: Kotlin + Spring Boot for the API
+
+Status: Accepted
+Date: 2026-05-31
+
+### Context
+We need a backend language and framework.
+
+### Decision
+Kotlin with Spring Boot.
+
+### Alternatives Considered
+- **Node.js (TypeScript)**: viable; rejected because Kotlin's type system and Spring's ecosystem (validation, security, JPA, Testcontainers) make a portfolio project look more substantive.
+- **Go**: minimal frameworks, less batteries-included; would require more hand-rolled plumbing.
+- **Java + Spring Boot**: same ecosystem but more verbose than Kotlin.
+
+### Consequences
+- Strong type system, null safety, coroutines available if needed.
+- Spring's opinionatedness reduces decision count.
+- JVM cold-start cost matters for serverless hosting (relevant to ADR-0022).
+
+---
+
+## ADR-0020: SwiftUI targeting iOS 17+
+
+Status: Accepted
+Date: 2026-05-31
+
+### Context
+We need to pick a UI framework and minimum iOS version.
+
+### Decision
+SwiftUI, minimum iOS 17. This unlocks the `@Observable` macro (replacing `ObservableObject` / `@Published`) and modern navigation APIs (`NavigationStack`).
+
+### Alternatives Considered
+- **UIKit**: more mature, more code, slower to build.
+- **SwiftUI on iOS 16**: missing `@Observable` and some navigation niceties; not worth supporting an older OS for a new app.
+
+### Consequences
+- A small share of iOS users on iOS 16 or older cannot install. Acceptable for a portfolio/MVP product.
+- Less code, more declarative.
+
+---
+
+## ADR-0021: Single-AZ RDS for MVP, Multi-AZ deferred
+
+Status: Accepted
+Date: 2026-05-31
+
+### Context
+RDS Multi-AZ doubles cost and provides automatic failover. MVP traffic is low; downtime tolerance is high.
+
+### Decision
+Run a single-AZ RDS instance for MVP. Plan to migrate to Multi-AZ when traffic or uptime requirements warrant it.
+
+### Alternatives Considered
+- **Multi-AZ from day one**: rejected on cost.
+- **Aurora Serverless**: more expensive at low/idle load than a t-class RDS instance; revisit if traffic patterns favour bursting.
+
+### Consequences
+- Automated backups still configured (RDS default).
+- A single-AZ outage causes downtime; acceptable for MVP.
+- Migration to Multi-AZ is non-disruptive when triggered.
+
+---
+
+## ADR-0022: API hosting: ECS Fargate vs App Runner
+
+Status: Proposed
+Date: 2026-05-31
+
+### Context
+The API is stateless and containerised. AWS offers several hosting options. We need to choose between ECS Fargate (explicit container orchestration) and App Runner (simpler, opinionated).
+
+### Decision (Pending)
+TBD. Both options are documented as candidates.
+
+### Alternatives Considered
+- **ECS Fargate**: more configuration, more control, integrates well with VPC and ALB. Lower abstraction.
+- **App Runner**: easier to set up; automatic scaling; less control over networking. Higher abstraction but limited tunability.
+- **Lambda**: rejected; cold-start on JVM is poor, and the API is not a fit for the request model.
+- **EKS**: massive overkill for a single-container backend.
+
+### Consequences
+*To be filled in when the decision is made.*
+
+---
+
+## ADR-0023: iOS offline behaviour
+
+Status: Accepted
+Date: 2026-05-31
+
+### Context
+Users will log pints in venues with weak connectivity. We need to decide how much offline support is in MVP.
+
+### Decision
+Offline queue for pint creation only (Option B). Photos and metadata are saved to local file storage on capture. Upload completes in the background via `URLSessionConfiguration.background` when connectivity returns — even if the app is suspended. All other features require connectivity.
+
+Failed uploads are retried up to 3 times over 24 hours. After that, the pint is marked "failed" and the user is prompted to retry or discard.
+
+### Alternatives Considered
+- **A. Online-only**: simplest but poor UX in the most common usage environment (bars with weak signal).
+- **C. Full offline-first with local DB**: best UX but massive complexity (sync conflicts, cache invalidation, stale data). Overkill for MVP.
+
+### Consequences
+- The core action (logging a pint) works in low/no connectivity — the most important UX scenario.
+- Requires local file storage management (pending photos) and background session handling.
+- Pending pints don't appear on the leaderboard until synced — acceptable tradeoff.
+- The `PintRepository` becomes the seam: it decides whether to upload immediately or queue locally.
+
+---
+
+## ADR-0024: Migration tool: Flyway vs Liquibase
+
+Status: Proposed
+Date: 2026-05-31
+
+### Context
+We need a tool to manage DB schema evolution.
+
+### Decision (Pending)
+TBD. Both work with Spring Boot.
+
+### Alternatives Considered
+- **Flyway**: simpler, SQL-based migrations, fewer features.
+- **Liquibase**: more features (declarative changesets, rollbacks, conditional logic), but more verbose.
+- **Hand-rolled SQL with manual tracking**: rejected; loses traceability.
+
+### Consequences
+*To be filled in when the decision is made.*
+
+---
+
+## ADR-0025: Pending pints visible in My Pints only (not leaderboard)
+
+Status: Accepted
+Date: 2026-05-31
+
+### Context
+When a pint is logged offline (or upload is in progress), we need to decide where the pending pint appears in the UI and whether it counts toward the leaderboard.
+
+### Decision
+Pending pints appear only in the "My Pints" screen with a "pending" badge. They do NOT appear on the leaderboard or map until the server confirms the upload. The leaderboard only reflects server-confirmed data.
+
+### Alternatives Considered
+- **Optimistic leaderboard (count increments immediately)**: rejected because it shows unconfirmed data to other group members and requires a rollback if the upload permanently fails — confusing UX.
+- **Home screen indicator ("1 pint uploading...")**: cleaner than optimistic counting but adds UI complexity for MVP. May be revisited post-MVP.
+
+### Consequences
+- The leaderboard is always truthful (server-confirmed only).
+- Users may notice a brief delay between logging and their count updating — acceptable since upload is typically fast.
+- My Pints is the single place to see pending/failed state and take action (retry/discard).
+- **Future improvement**: consider adding a subtle home-screen indicator (e.g. "1 pint uploading...") post-MVP for better feedback without compromising leaderboard accuracy.
