@@ -11,49 +11,31 @@ import software.amazon.awssdk.services.s3.presigner.S3Presigner
 import java.net.URI
 
 @Configuration
-class S3Config {
+class S3Config(
+    @Value("\${app.s3.endpoint}") private val endpoint: String,
+    @Value("\${app.s3.region}") private val region: String,
+    @Value("\${app.s3.access-key:test}") private val accessKey: String,
+    @Value("\${app.s3.secret-key:test}") private val secretKey: String
+) {
 
-    @Value("\${app.s3.endpoint}")
-    private lateinit var endpoint: String
-
-    @Value("\${app.s3.region}")
-    private lateinit var region: String
-
-    @Bean
-    fun s3Client(): S3Client {
-        val builder = S3Client.builder()
-            .region(Region.of(region))
-
-        // LocalStack uses static credentials and a custom endpoint
-        if (endpoint.contains("localhost") || endpoint.contains("localstack")) {
-            builder
-                .endpointOverride(URI.create(endpoint))
-                .credentialsProvider(
-                    StaticCredentialsProvider.create(
-                        AwsBasicCredentials.create("test", "test")
-                    )
-                )
-                .forcePathStyle(true)
-        }
-
-        return builder.build()
-    }
+    private val credentials = StaticCredentialsProvider.create(
+        AwsBasicCredentials.create(accessKey, secretKey)
+    )
 
     @Bean
-    fun s3Presigner(): S3Presigner {
-        val builder = S3Presigner.builder()
+    fun s3Client(): S3Client =
+        S3Client.builder()
             .region(Region.of(region))
+            .endpointOverride(URI.create(endpoint))
+            .credentialsProvider(credentials)
+            .forcePathStyle(true)
+            .build()
 
-        if (endpoint.contains("localhost") || endpoint.contains("localstack")) {
-            builder
-                .endpointOverride(URI.create(endpoint))
-                .credentialsProvider(
-                    StaticCredentialsProvider.create(
-                        AwsBasicCredentials.create("test", "test")
-                    )
-                )
-        }
-
-        return builder.build()
-    }
+    @Bean
+    fun s3Presigner(): S3Presigner =
+        S3Presigner.builder()
+            .region(Region.of(region))
+            .endpointOverride(URI.create(endpoint))
+            .credentialsProvider(credentials)
+            .build()
 }
