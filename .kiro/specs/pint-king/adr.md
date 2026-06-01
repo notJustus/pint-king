@@ -59,6 +59,7 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0023 | iOS offline behaviour | Accepted |
 | 0024 | Migration tool: Flyway | Accepted |
 | 0025 | Pending pints visible in My Pints only (not leaderboard) | Accepted |
+| 0026 | Redundant index on group_blocks | Proposed |
 
 ---
 
@@ -620,3 +621,23 @@ Pending pints appear only in the "My Pints" screen with a "pending" badge. They 
 - Users may notice a brief delay between logging and their count updating — acceptable since upload is typically fast.
 - My Pints is the single place to see pending/failed state and take action (retry/discard).
 - **Future improvement**: consider adding a subtle home-screen indicator (e.g. "1 pint uploading...") post-MVP for better feedback without compromising leaderboard accuracy.
+
+---
+
+## ADR-0026: Redundant index on group_blocks
+
+Status: Proposed
+Date: 2026-06-01
+
+### Context
+`V5__create_group_blocks.sql` declares both a `UNIQUE (group_id, user_id)` constraint and an explicit `CREATE INDEX idx_group_blocks_lookup ON group_blocks (group_id, user_id)`. In PostgreSQL, a UNIQUE constraint automatically creates a unique index on those columns. The explicit index is therefore redundant — any query that would use it will use the UNIQUE index instead.
+
+### Decision (Pending)
+Leave as-is for now. Decide later whether to remove `idx_group_blocks_lookup` in a future migration (it has no performance cost, just minor clutter).
+
+### Alternatives Considered
+- **Remove now**: cleaner schema, but requires editing an applied migration or adding a new one to drop it.
+- **Keep permanently**: harmless but technically redundant; PostgreSQL doesn't duplicate internal structures.
+
+### Consequences
+*No immediate impact. One extra index name in metadata, no extra storage or performance cost.*
