@@ -1,0 +1,40 @@
+spring:
+  application:
+    name: pint-king-api
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/pintking
+    username: pintking
+    password: pintking
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        dialect: org.hibernate.spatial.dialect.postgis.PostgisPG10Dialect
+    open-in-view: false
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 12MB
+
+server:
+  port: 8080
+
+app:
+  jwt:
+    secret: ${JWT_SECRET:dev-secret-change-in-production-must-be-at-least-256-bits-long!!}
+    expiry-hours: 1
+  refresh-token:
+    expiry-days: 30
+  s3:
+    bucket: pint-king-photos
+    endpoint: ${S3_ENDPOINT:http://localhost:4566}
+    region: ${S3_REGION:eu-west-1}
