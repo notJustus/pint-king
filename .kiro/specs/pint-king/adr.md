@@ -63,6 +63,7 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0027 | Plain UUID fields instead of JPA relationship annotations | Accepted (revisit) |
 | 0028 | String constants instead of Kotlin enums for DB-constrained values | Accepted (revisit) |
 | 0029 | Manual `updatedAt` management (no JPA lifecycle callback) | Accepted (revisit) |
+| 0030 | Always-explicit S3 credentials (no conditional endpoint check) | Accepted (revisit) |
 
 ---
 
@@ -710,3 +711,27 @@ Set `updatedAt` manually in service code (`entity.updatedAt = Instant.now()`) ra
 - Explicit — you can see exactly where `updatedAt` is set.
 - Potential footgun: forgetting to set it in a new service method means the timestamp goes stale.
 - **Revisit when**: we forget to update it and it causes a bug, or when we have enough entities that a shared base class would reduce repetition meaningfully.
+
+---
+
+## ADR-0030: Always-explicit S3 credentials (no conditional endpoint check)
+
+Status: Accepted (revisit)
+Date: 2026-06-01
+
+### Context
+The original `S3Config` conditionally applied static credentials and endpoint override only when the endpoint URL contained "localhost" or "localstack". In production, it relied on the default AWS credential chain. However, AWS SDK v2.25's `S3AuthSchemeInterceptor` resolves credentials independently, and environment variables like `AWS_PROFILE` interfere even when `credentialsProvider()` is set on the builder — causing `SdkClientException` in tests.
+
+### Decision
+Always pass explicit `StaticCredentialsProvider`, endpoint override, and `forcePathStyle(true)` to both `S3Client` and `S3Presigner`. Credentials come from Spring properties (`app.s3.access-key` / `app.s3.secret-key`) with a default of `"test"` for local development.
+
+### Alternatives Considered
+- **Conditional endpoint check**: broke under `AWS_PROFILE=bedrock` environment variable due to SDK auth scheme interceptor.
+- **Unset `AWS_PROFILE` in tests**: fragile, wouldn't help in CI or other environments with different credential setups.
+- **Use `@Profile`-specific beans**: adds complexity for a problem solved by one consistent config path.
+
+### Consequences
+- Tests work regardless of host machine's AWS configuration.
+- Production must supply `app.s3.access-key` and `app.s3.secret-key` via environment variables (or the defaults will be "test").
+- `forcePathStyle(true)` is always on — fine for LocalStack, harmless for most S3 configurations but won't work with virtual-hosted-style bucket access.
+- **Revisit when**: deploying to AWS (may need to switch to `DefaultCredentialsProvider` for IAM role-based auth and remove `forcePathStyle`).
