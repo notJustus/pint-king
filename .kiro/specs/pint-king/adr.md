@@ -57,7 +57,7 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0021 | Single-AZ RDS for MVP, Multi-AZ deferred | Accepted |
 | 0022 | API hosting: ECS Fargate vs App Runner | Proposed |
 | 0023 | iOS offline behaviour | Accepted |
-| 0024 | Migration tool: Flyway vs Liquibase | Proposed |
+| 0024 | Migration tool: Flyway | Accepted |
 | 0025 | Pending pints visible in My Pints only (not leaderboard) | Accepted |
 
 ---
@@ -580,22 +580,23 @@ Failed uploads are retried up to 3 times over 24 hours. After that, the pint is 
 
 ## ADR-0024: Migration tool: Flyway vs Liquibase
 
-Status: Proposed
-Date: 2026-05-31
+Status: Accepted
+Date: 2026-06-01
 
 ### Context
 We need a tool to manage DB schema evolution.
 
-### Decision (Pending)
-TBD. Both work with Spring Boot.
+### Decision
+Flyway. SQL-based, forward-only migrations. Simpler than Liquibase, integrates natively with Spring Boot, and matches the convention already specified in `l3-database.md` (naming: `V{N}__{description}.sql`).
 
 ### Alternatives Considered
-- **Flyway**: simpler, SQL-based migrations, fewer features.
-- **Liquibase**: more features (declarative changesets, rollbacks, conditional logic), but more verbose.
+- **Liquibase**: more features (declarative changesets, rollbacks, conditional logic), but more verbose and complex than needed for this project.
 - **Hand-rolled SQL with manual tracking**: rejected; loses traceability.
 
 ### Consequences
-*To be filled in when the decision is made.*
+- Simple SQL files, one per migration.
+- No rollback support (forward-only by convention). Corrections go in new migrations.
+- Spring Boot auto-runs migrations on startup.
 
 ---
 
