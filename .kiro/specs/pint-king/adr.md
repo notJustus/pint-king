@@ -60,6 +60,9 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0024 | Migration tool: Flyway | Accepted |
 | 0025 | Pending pints visible in My Pints only (not leaderboard) | Accepted |
 | 0026 | Redundant index on group_blocks | Proposed |
+| 0027 | Plain UUID fields instead of JPA relationship annotations | Accepted (revisit) |
+| 0028 | String constants instead of Kotlin enums for DB-constrained values | Accepted (revisit) |
+| 0029 | Manual `updatedAt` management (no JPA lifecycle callback) | Accepted (revisit) |
 
 ---
 
@@ -641,3 +644,69 @@ Leave as-is for now. Decide later whether to remove `idx_group_blocks_lookup` in
 
 ### Consequences
 *No immediate impact. One extra index name in metadata, no extra storage or performance cost.*
+
+---
+
+## ADR-0027: Plain UUID fields instead of JPA relationship annotations
+
+Status: Accepted (revisit)
+Date: 2026-06-01
+
+### Context
+JPA supports `@ManyToOne`/`@OneToMany` annotations that model relationships between entities. These enable lazy loading (navigate from a `PintLogEntity` to its `UserEntity` via a field) and cascade operations (deleting a user auto-deletes their pint logs). We need to decide whether to use them.
+
+### Decision
+Store all foreign keys as plain `UUID` fields (e.g. `val userId: UUID`) instead of JPA relationship associations. All related entities are loaded explicitly through their own repositories.
+
+### Alternatives Considered
+- **`@ManyToOne` / `@OneToMany` relationships**: enables navigation (`pintLog.user.displayName`) and cascade deletes. Rejected for now because lazy loading introduces hidden N+1 queries, bidirectional relationships are complex to manage, and explicit repository calls are easier to reason about for a learning project.
+
+### Consequences
+- No accidental N+1 queries from lazy loading.
+- Slightly more manual work in service code (multiple repository calls to assemble related data).
+- No cascade deletes — must handle manually in service layer (relevant for account deletion, Task 13).
+- **Revisit when**: service code becomes cluttered with repetitive multi-repository lookups, or cascade logic gets error-prone.
+
+---
+
+## ADR-0028: String constants instead of Kotlin enums for DB-constrained values
+
+Status: Accepted (revisit)
+Date: 2026-06-01
+
+### Context
+The database uses CHECK constraints on columns like `group_members.role` (`'admin'`, `'member'`), `pint_logs.drink_type`, and `leaderboard_snapshots.period_type`. We need to decide how to represent these in Kotlin.
+
+### Decision
+Use plain `String` fields with companion object constants (e.g. `GroupMemberEntity.ROLE_ADMIN = "admin"`). No Kotlin `enum class`.
+
+### Alternatives Considered
+- **Kotlin enum with `@Enumerated(EnumType.STRING)`**: provides compile-time safety (can't accidentally write `"admim"`). Rejected for now because renaming an enum value breaks all existing DB rows, and the mapping between enum conventions (UPPERCASE) and DB values (lowercase) requires extra configuration.
+
+### Consequences
+- Typos in role/type strings are only caught at the DB level (CHECK constraint rejects them), not at compile time.
+- No risk of breaking the DB if an enum value is renamed or reordered.
+- Simpler entity code.
+- **Revisit when**: typo bugs actually occur in practice, or when adding validated request DTOs (which can use enums at the API boundary independently of the entity layer).
+
+---
+
+## ADR-0029: Manual `updatedAt` management (no JPA lifecycle callback)
+
+Status: Accepted (revisit)
+Date: 2026-06-01
+
+### Context
+Several entities have an `updatedAt` timestamp that should reflect the last modification time. JPA offers `@PreUpdate` lifecycle callbacks that can set this automatically before every flush.
+
+### Decision
+Set `updatedAt` manually in service code (`entity.updatedAt = Instant.now()`) rather than using a `@PreUpdate` callback or a shared `@MappedSuperclass` with automatic timestamp management.
+
+### Alternatives Considered
+- **`@PreUpdate` callback on each entity**: auto-updates the field but hides behaviour (readers must know to look for the annotation). Also requires a no-arg constructor or `@EntityListeners` setup.
+- **`@MappedSuperclass` with `@PrePersist` / `@PreUpdate`**: DRY across entities but adds inheritance and a base class that every entity must extend.
+
+### Consequences
+- Explicit — you can see exactly where `updatedAt` is set.
+- Potential footgun: forgetting to set it in a new service method means the timestamp goes stale.
+- **Revisit when**: we forget to update it and it causes a bug, or when we have enough entities that a shared base class would reduce repetition meaningfully.
