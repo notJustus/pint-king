@@ -64,6 +64,9 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0028 | String constants instead of Kotlin enums for DB-constrained values | Accepted (revisit) |
 | 0029 | Manual `updatedAt` management (no JPA lifecycle callback) | Accepted (revisit) |
 | 0030 | Always-explicit S3 credentials (no conditional endpoint check) | Accepted (revisit) |
+| 0031 | Open class for AppleJwksClient (test overriding) | Accepted (revisit) |
+| 0032 | Default display name for new users | Accepted (revisit) |
+| 0033 | No rate limiting on auth endpoints in MVP | Accepted (revisit) |
 
 ---
 
