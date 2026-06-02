@@ -735,3 +735,64 @@ Always pass explicit `StaticCredentialsProvider`, endpoint override, and `forceP
 - Production must supply `app.s3.access-key` and `app.s3.secret-key` via environment variables (or the defaults will be "test").
 - `forcePathStyle(true)` is always on — fine for LocalStack, harmless for most S3 configurations but won't work with virtual-hosted-style bucket access.
 - **Revisit when**: deploying to AWS (may need to switch to `DefaultCredentialsProvider` for IAM role-based auth and remove `forcePathStyle`).
+
+## ADR-0031: Open class for AppleJwksClient (test overriding)
+
+Status: Accepted (revisit)
+Date: 2026-06-02
+
+### Context
+The `AppleJwksClient` fetches Apple's public keys over HTTPS. Integration tests need to verify token verification without hitting Apple's real JWKS endpoint.
+
+### Decision
+Mark `AppleJwksClient` as `open class` with `open fun getPublicKey()` so tests can subclass it and return a known test key pair. The test configuration (`TestAuthConfig`) provides a `@Primary` bean that overrides the real client.
+
+### Alternatives Considered
+- **Interface + implementation**: Adds an interface file for a class that will only ever have one production implementation. More ceremony for no gain.
+- **MockBean**: Spring's `@MockBean` recreates the application context and makes tests slower. Also, mocking at this level would skip the actual JWKS-to-RSAPublicKey conversion logic.
+- **WireMock**: Would test the HTTP fetch but adds a test dependency and setup complexity for something we can verify manually once.
+
+### Consequences
+- Simple, low-ceremony approach to testing.
+- The `open` keyword on a Spring `@Component` is slightly unusual in Kotlin but required since Kotlin classes are `final` by default.
+- **Revisit when**: if we need multiple JWKS providers or caching, extract to an interface at that point.
+
+## ADR-0032: Default display name for new users
+
+Status: Accepted (revisit)
+Date: 2026-06-02
+
+### Context
+When a user authenticates for the first time, we create their account. The `display_name` column is NOT NULL. Apple's identity token doesn't contain a display name — Apple provides name info only on the very first Sign In (via a separate field, not in the identity token itself).
+
+### Decision
+Set `displayName = "User"` as the default for newly created accounts. The iOS app will prompt the user to set their name immediately after first sign-in.
+
+### Alternatives Considered
+- **Require name in the auth request**: Would couple auth with profile setup, making the endpoint more complex. The iOS client may not have the name ready at auth time.
+- **Nullable display_name**: Would require null-handling everywhere the name is used (leaderboards, group lists, etc.).
+
+### Consequences
+- User creation is simple — one endpoint, one concern.
+- Briefly, a user exists with display name "User" until they update their profile.
+- **Revisit when**: if we get name from Apple's initial sign-in response, we could pass it through.
+
+## ADR-0033: No rate limiting on auth endpoints in MVP
+
+Status: Accepted (revisit)
+Date: 2026-06-02
+
+### Context
+Auth endpoints (`/auth/apple`, `/auth/refresh`) are public and could be targets for abuse or DDoS. Rate limiting is a common defense.
+
+### Decision
+Skip rate limiting for MVP. The Apple auth endpoint accepts cryptographically signed JWTs — you can't brute-force a valid token without Apple's private key. The refresh endpoint uses 256-bit random tokens — also not brute-forceable.
+
+### Alternatives Considered
+- **Spring Boot Bucket4j or resilience4j**: Adds a dependency and configuration for a threat that's low-risk given our token format.
+- **API gateway rate limiting (AWS ALB / API Gateway)**: Better fit for production, but we don't have infrastructure yet.
+
+### Consequences
+- Simpler MVP with fewer moving parts.
+- A determined attacker could still flood the endpoints to waste server resources (DDoS), even though they can't forge valid tokens.
+- **Revisit when**: deploying to production. Add rate limiting at the API gateway level (per-IP, per-endpoint) to protect against resource exhaustion.
