@@ -16,6 +16,8 @@ import org.springframework.test.web.servlet.post
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc
 import org.testcontainers.containers.PostgreSQLContainer
 import org.testcontainers.utility.DockerImageName
+import java.time.Instant
+import java.time.temporal.ChronoUnit
 
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -115,6 +117,131 @@ class AuthControllerTest(
 
         it("returns 400 when identityToken is missing") {
             mockMvc.post("/auth/apple") {
+                contentType = MediaType.APPLICATION_JSON
+                content = """{}"""
+            }.andExpect {
+                status { isBadRequest() }
+            }
+        }
+    }
+
+    describe("POST /auth/refresh") {
+
+        fun authenticateAndGetRefreshToken(): String {
+            val token = TestAppleTokens.createValidToken("refresh_test_user")
+            val result = mockMvc.post("/auth/apple") {
+                contentType = MediaType.APPLICATION_JSON
+                content = """{"identityToken": "$token"}"""
+            }.andReturn()
+
+            val body = result.response.contentAsString
+            return com.fasterxml.jackson.module.kotlin.jacksonObjectMapper()
+                .readTree(body).get("refreshToken").asText()
+        }
+
+        it("returns new JWT and refresh token for a valid unused token") {
+            val refreshToken = authenticateAndGetRefreshToken()
+
+            mockMvc.post("/auth/refresh") {
+                contentType = MediaType.APPLICATION_JSON
+                content = """{"refreshToken": "$refreshToken"}"""
+            }.andExpect {
+                status { isOk() }
+                jsonPath("$.jwt") { isNotEmpty() }
+                jsonPath("$.refreshToken") { isNotEmpty() }
+            }
+        }
+
+        it("marks the old token as used after rotation") {
+            val refreshToken = authenticateAndGetRefreshToken()
+            val tokenHash = RefreshTokenService.hash(refreshToken)
+
+            mockMvc.post("/auth/refresh") {
+                contentType = MediaType.APPLICATION_JSON
+                content = """{"refreshToken": "$refreshToken"}"""
+            }.andExpect {
+                status { isOk() }
+            }
+
+            val oldToken = refreshTokenRepository.findByTokenHash(tokenHash)!!
+            oldToken.used shouldBe true
+        }
+
+        it("returns 401 for an expired token") {
+            val user = userRepository.save(UserEntity(appleId = "expired_token_user", displayName = "Test"))
+            val rawToken = "expired-test-token-value"
+            refreshTokenRepository.save(
+                RefreshTokenEntity(
+                    userId = user.id!!,
+                    tokenHash = RefreshTokenService.hash(rawToken),
+                    expiresAt = Instant.now().minus(1, ChronoUnit.DAYS)
+                )
+            )
+
+            mockMvc.post("/auth/refresh") {
+                contentType = MediaType.APPLICATION_JSON
+                content = """{"refreshToken": "$rawToken"}"""
+            }.andExpect {
+                status { isUnauthorized() }
+            }
+        }
+
+        it("returns 401 for a non-existent token") {
+            mockMvc.post("/auth/refresh") {
+                contentType = MediaType.APPLICATION_JSON
+                content = """{"refreshToken": "does-not-exist-in-db"}"""
+            }.andExpect {
+                status { isUnauthorized() }
+            }
+        }
+
+        it("returns 401 and invalidates all user tokens on reuse") {
+            val refreshToken = authenticateAndGetRefreshToken()
+
+            // First use — should succeed
+            mockMvc.post("/auth/refresh") {
+                contentType = MediaType.APPLICATION_JSON
+                content = """{"refreshToken": "$refreshToken"}"""
+            }.andExpect {
+                status { isOk() }
+            }
+
+            // Reuse the same token — should fail and wipe all tokens
+            mockMvc.post("/auth/refresh") {
+                contentType = MediaType.APPLICATION_JSON
+                content = """{"refreshToken": "$refreshToken"}"""
+            }.andExpect {
+                status { isUnauthorized() }
+            }
+
+            val user = userRepository.findByAppleId("refresh_test_user")!!
+            val remainingTokens = refreshTokenRepository.findByUserId(user.id!!)
+            remainingTokens.size shouldBe 0
+        }
+
+        it("new token from rotation works for subsequent refresh") {
+            val refreshToken = authenticateAndGetRefreshToken()
+
+            val result = mockMvc.post("/auth/refresh") {
+                contentType = MediaType.APPLICATION_JSON
+                content = """{"refreshToken": "$refreshToken"}"""
+            }.andReturn()
+
+            val newRefreshToken = com.fasterxml.jackson.module.kotlin.jacksonObjectMapper()
+                .readTree(result.response.contentAsString).get("refreshToken").asText()
+
+            mockMvc.post("/auth/refresh") {
+                contentType = MediaType.APPLICATION_JSON
+                content = """{"refreshToken": "$newRefreshToken"}"""
+            }.andExpect {
+                status { isOk() }
+                jsonPath("$.jwt") { isNotEmpty() }
+                jsonPath("$.refreshToken") { isNotEmpty() }
+            }
+        }
+
+        it("returns 400 when refreshToken is missing") {
+            mockMvc.post("/auth/refresh") {
                 contentType = MediaType.APPLICATION_JSON
                 content = """{}"""
             }.andExpect {

@@ -18,6 +18,12 @@ class AuthController(private val authService: AuthService) {
         val response = authService.authenticateWithApple(request.identityToken)
         return ResponseEntity.status(HttpStatus.OK).body(response)
     }
+
+    @PostMapping("/refresh")
+    fun refresh(@Valid @RequestBody request: RefreshRequest): ResponseEntity<TokenPair> {
+        val tokenPair = authService.refresh(request.refreshToken)
+        return ResponseEntity.ok(tokenPair)
+    }
 }
 
 data class AppleAuthRequest(
@@ -25,8 +31,18 @@ data class AppleAuthRequest(
     val identityToken: String
 )
 
+data class RefreshRequest(
+    @field:NotBlank(message = "Refresh token is required")
+    val refreshToken: String
+)
+
 data class AuthResponse(
     val jwt: String,
     val refreshToken: String,
     val isNewUser: Boolean
+)
+
+data class TokenPair(
+    val jwt: String,
+    val refreshToken: String
 )

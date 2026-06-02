@@ -36,4 +36,11 @@ class AuthService(
             isNewUser = isNewUser
         )
     }
+
+    fun refresh(rawRefreshToken: String): TokenPair {
+        val userId = refreshTokenService.rotateToken(rawRefreshToken)
+        val jwt = jwtService.generateToken(userId)
+        val newRefreshToken = refreshTokenService.generateRefreshToken(userId)
+        return TokenPair(jwt = jwt, refreshToken = newRefreshToken)
+    }
 }

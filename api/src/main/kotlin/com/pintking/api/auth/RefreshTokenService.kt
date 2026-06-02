@@ -1,5 +1,6 @@
 package com.pintking.api.auth
 
+import com.pintking.api.common.UnauthorizedException
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
@@ -30,6 +31,27 @@ class RefreshTokenService(
         refreshTokenRepository.save(entity)
 
         return rawToken
+    }
+
+    @Transactional(noRollbackFor = [UnauthorizedException::class])
+    fun rotateToken(rawToken: String): UUID {
+        val tokenHash = hash(rawToken)
+        val entity = refreshTokenRepository.findByTokenHash(tokenHash)
+            ?: throw UnauthorizedException("Invalid refresh token")
+
+        if (entity.expiresAt.isBefore(Instant.now())) {
+            throw UnauthorizedException("Refresh token expired")
+        }
+
+        if (entity.used) {
+            refreshTokenRepository.deleteByUserId(entity.userId)
+            throw UnauthorizedException("Token reuse detected")
+        }
+
+        entity.used = true
+        refreshTokenRepository.save(entity)
+
+        return entity.userId
     }
 
     @Transactional
