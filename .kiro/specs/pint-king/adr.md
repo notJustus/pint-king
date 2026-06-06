@@ -70,6 +70,9 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0034 | JWT filter writes error response directly (bypasses GlobalExceptionHandler) | Accepted (revisit) |
 | 0035 | Public auth paths enumerated explicitly, not by `/auth/` prefix | Accepted (revisit) |
 | 0036 | PATCH /users/me partial update cannot clear active_group_id | Accepted (revisit) |
+| 0037 | Image type validation by magic bytes, not Content-Type | Accepted (revisit) |
+| 0038 | Avatar re-upload deletes old object after persisting new key | Accepted (revisit) |
+| 0039 | Servlet multipart limit set above all business size limits | Accepted (revisit) |
 
 ---
 
@@ -868,4 +871,73 @@ A `null`/absent `active_group_id` means "no change". There is therefore no way t
 - Simple, conventional PATCH semantics; the DTO stays a plain data class.
 - The active-group invariant (Property 16) is upheld on the *set* path here (membership is verified before assignment); the *fallback-to-null* path is owned entirely by Task 18.
 - **Revisit when**: a product need arises to let a user explicitly deselect their active group — switch the field to `JsonNullable` at that point.
+
+## ADR-0037: Image type validation by magic bytes, not Content-Type
+
+Status: Accepted (revisit)
+Date: 2026-06-06
+
+### Context
+`POST /users/me/avatar` must accept only JPEG or PNG (Property 6). A multipart upload carries a client-supplied `Content-Type` header per part, but that header is trivially spoofable — a client can label any bytes `image/jpeg`. We need a check that reflects the actual file contents.
+
+### Decision
+Validate the file by inspecting its leading bytes (the format's magic number): `FF D8 FF` for JPEG, `89 50 4E 47 0D 0A 1A 0A` for PNG. The declared `Content-Type` is ignored for validation. Anything that does not start with a recognised signature is rejected with 422.
+
+### Alternatives Considered
+- **Trust the multipart `Content-Type`**: simplest, but spoofable and therefore not a real validation. Rejected.
+- **Full image decode (e.g. `ImageIO.read`)**: strongest guarantee (the bytes really are a decodable image) but pulls in decode cost and a dependency on the JDK image stack for what is, at this stage, a gatekeeping check. Deferred — magic bytes are enough to satisfy the property and stop obvious misuse.
+
+### Consequences
+- Cheap, dependency-free, and resistant to header spoofing.
+- A file with a valid signature but corrupt body still passes (we only read the prefix). Acceptable for MVP; the bytes are stored as-is and served back via pre-signed URL.
+- **Revisit when**: we start server-side transcoding (HEIC/PNG → JPEG, per the design doc's "converted on upload" note), at which point a real decode happens anyway and subsumes this check.
+
+## ADR-0038: Avatar re-upload deletes old object after persisting new key
+
+Status: Accepted (revisit)
+Date: 2026-06-06
+
+### Context
+Re-uploading an avatar replaces the previous S3 object. The old key would otherwise leak (orphaned forever). S3 and the DB cannot share a transaction, so the order of "upload new", "persist new key", and "delete old" determines what a partial failure leaves behind.
+
+### Decision
+Order: (1) upload the new object to a fresh UUID key, (2) set `avatar_url` to the new key on the managed entity (committed by the surrounding `@Transactional`), (3) best-effort `deleteObject` on the previous key. If the delete fails, the user still has a working new avatar and the stale object is left for the orphan-cleanup job (Task 28) to reap.
+
+### Alternatives Considered
+- **Delete old first, then upload new**: a failure between the two would leave the user with no avatar and a dangling DB key. Worse user-facing outcome than a leaked object. Rejected.
+- **Reuse a single deterministic key per user (overwrite in place)**: no orphan to clean, but loses the content-addressed-by-UUID property the rest of the codebase uses and makes pre-signed-URL cache-busting harder. Rejected for consistency with the existing key scheme.
+
+### Consequences
+- The user-visible state is always consistent: `avatar_url` points at an object that exists.
+- A failed cleanup leaves at most one orphan per re-upload, bounded and recoverable by the cleanup job.
+- The `deleteObject` call sits after the entity mutation but executes synchronously within the request; a slow delete adds latency. Acceptable given avatar uploads are rare. **Revisit when**: we move S3 deletes to an async dispatch (as pint deletion does), at which point avatar cleanup should use the same mechanism.
+
+## ADR-0039: Servlet multipart limit set above all business size limits
+
+Status: Accepted (revisit)
+Date: 2026-06-06
+
+### Context
+Upload size is gated in two independent layers:
+
+1. **Servlet/container layer** (`spring.servlet.multipart.max-file-size`, currently `10MB`). Enforced by embedded Tomcat *during multipart parsing, before the controller runs*. Exceeding it throws `MaxUploadSizeExceededException` — which `GlobalExceptionHandler` does not handle, so it falls through to a generic 500.
+2. **Application layer** (explicit `bytes.size > LIMIT` checks in the service). Enforces the per-endpoint business rule (5 MB avatars, 10 MB pint photos per Property 6) and throws `UnprocessableException` → a clean 422.
+
+These two collide at the boundary. The servlet limit is a single global number; it cannot distinguish an avatar request (5 MB rule) from a pint request (10 MB rule). With the servlet limit set *equal to* the largest business limit (10 MB = the pint-photo limit), an over-limit **pint** photo trips the servlet gate *first* and yields an unhandled 500 — never reaching the in-code check that was supposed to return 422. The avatar endpoint is unaffected only because its 5 MB rule sits comfortably below the 10 MB servlet gate, so the 5–10 MB band still produces a clean 422.
+
+### Decision
+Set the servlet `max-file-size` **strictly above the largest business size limit** (e.g. `11MB` or `15MB`, with `max-request-size` a little higher again to allow for multipart overhead + metadata parts). This makes the **application-layer checks the single authoritative source of truth** for upload size rules. The servlet limit reverts to its proper role: a coarse abuse backstop that only fires on absurd uploads, well outside any legitimate request.
+
+### Alternatives Considered
+- **Add `@ExceptionHandler(MaxUploadSizeExceededException)` mapping it to 422**: makes even servlet-gate rejections return a sane status. More robust against genuinely huge uploads (rejects before fully buffering), but splits the "max size" rule across two places (yml + handler) and lets the container, not the service, decide the business outcome. *Not chosen as the primary mechanism, but a reasonable backstop to add alongside #1 later.*
+- **Leave the limits equal (status quo)**: rejected — produces an unhandled 500 for the exact case the spec says must be a 422, and the failure is silent (the in-code check looks correct but is dead code at the boundary).
+
+### Consequences
+- All upload-size validation lives in service code, returns a consistent 422 with a readable message, and is unit/integration-testable without provoking container-level errors.
+- The servlet limit still protects the process from memory/disk exhaustion by truly enormous uploads — it just no longer overlaps with any legitimate business limit.
+- A truly over-the-servlet-limit upload still yields an unhandled 500 until/unless we also add the `@ExceptionHandler` backstop (alternative above). Acceptable: that band is abuse, not normal use.
+- **Revisit when**: we add a third upload type with a larger limit, or decide to add the `MaxUploadSizeExceededException` handler as defence-in-depth.
+
+### Note for Task 21 (POST /pints)
+Pint photos have a **10 MB** business limit — currently *equal* to the servlet `max-file-size`, so the in-code 10 MB check would be dead at the boundary (over-limit → 500, not 422). **Before/while implementing Task 21:** raise `spring.servlet.multipart.max-file-size` above 10 MB (and bump `max-request-size` accordingly) so the in-code 10 MB check is the one that fires and returns 422, as the task's test matrix requires ("Photo over 10 MB → 422"). The avatar endpoint already works because 5 MB < 10 MB; this only needs fixing for the pint-photo path.
 
