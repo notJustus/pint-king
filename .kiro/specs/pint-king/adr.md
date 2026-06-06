@@ -799,3 +799,25 @@ Skip rate limiting for MVP. The Apple auth endpoint accepts cryptographically si
 - Simpler MVP with fewer moving parts.
 - A determined attacker could still flood the endpoints to waste server resources (DDoS), even though they can't forge valid tokens.
 - **Revisit when**: deploying to production. Add rate limiting at the API gateway level (per-IP, per-endpoint) to protect against resource exhaustion.
+
+---
+
+## ADR-0034: JWT filter writes error response directly (bypasses GlobalExceptionHandler)
+
+Status: Accepted (revisit)
+Date: 2026-06-02
+
+### Context
+The JWT authentication filter runs before Spring MVC's DispatcherServlet. When the filter rejects a request (no token, invalid token, expired token), it cannot throw an exception that would be caught by `@RestControllerAdvice` because exception handlers only apply to exceptions thrown inside the controller layer.
+
+### Decision
+The filter writes the 401 JSON error response directly to `HttpServletResponse` using Jackson's `ObjectMapper`, matching the same `ErrorResponse` structure used by the `GlobalExceptionHandler`.
+
+### Alternatives Considered
+- **Delegate to `AuthenticationEntryPoint`**: Spring Security's standard hook for authentication failures. Adds indirection — the filter would need to let the request through unauthenticated, then rely on Spring Security's access-denied flow. More framework-idiomatic but harder to reason about the error path.
+- **Re-dispatch to an error controller**: Forward the request to a `/error` endpoint that returns the response. Adds a request cycle for something that should be a simple rejection.
+
+### Consequences
+- Error format stays consistent across filter and controller layers without coupling them.
+- The filter owns its own serialization — if `ErrorResponse` changes shape, this must be updated too.
+- **Revisit when**: if we add more filters that need to return structured errors (consider extracting a shared utility).
