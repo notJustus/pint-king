@@ -67,6 +67,8 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0031 | Open class for AppleJwksClient (test overriding) | Accepted (revisit) |
 | 0032 | Default display name for new users | Accepted (revisit) |
 | 0033 | No rate limiting on auth endpoints in MVP | Accepted (revisit) |
+| 0034 | JWT filter writes error response directly (bypasses GlobalExceptionHandler) | Accepted (revisit) |
+| 0035 | Public auth paths enumerated explicitly, not by `/auth/` prefix | Accepted (revisit) |
 
 ---
 
@@ -821,3 +823,25 @@ The filter writes the 401 JSON error response directly to `HttpServletResponse` 
 - Error format stays consistent across filter and controller layers without coupling them.
 - The filter owns its own serialization — if `ErrorResponse` changes shape, this must be updated too.
 - **Revisit when**: if we add more filters that need to return structured errors (consider extracting a shared utility).
+
+---
+
+## ADR-0035: Public auth paths enumerated explicitly, not by `/auth/` prefix
+
+Status: Accepted (revisit)
+Date: 2026-06-06
+
+### Context
+Tasks 7–9 treated the entire `/auth/**` path space as public — both the JWT filter's `shouldNotFilter()` and the `SecurityConfig` rules used the `/auth/` prefix. Task 10 introduces `POST /auth/logout`, the first auth endpoint that *requires* authentication (it invalidates the caller's refresh tokens, so it needs to know who the caller is).
+
+### Decision
+Replace the `/auth/` prefix match with an explicit allow-list of public paths: `/auth/apple` and `/auth/refresh`. Both the filter (`JwtAuthenticationFilter.PUBLIC_PATHS`) and `SecurityConfig` now permit only those two. Everything else under `/auth`, including `/auth/logout`, flows through the JWT filter like any protected endpoint.
+
+### Alternatives Considered
+- **Keep `/auth/**` public, read the user from the request body**: Logout would have to accept a token/userId in its payload, which is unauthenticated and spoofable — any client could wipe another user's tokens.
+- **Move logout outside `/auth`** (e.g. `/users/me/logout`): Would keep the prefix rule intact but fragments the auth surface; logout is conceptually an auth operation.
+
+### Consequences
+- Adding a new *public* auth endpoint now requires updating two places (filter set + SecurityConfig). This is intentional friction — public-by-default is the riskier mistake.
+- Logout reuses the exact same JWT enforcement as protected endpoints; no special-casing.
+- **Revisit when**: the public list grows — consider a single shared constant referenced by both the filter and SecurityConfig to avoid drift.
