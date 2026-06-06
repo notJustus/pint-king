@@ -69,6 +69,7 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0033 | No rate limiting on auth endpoints in MVP | Accepted (revisit) |
 | 0034 | JWT filter writes error response directly (bypasses GlobalExceptionHandler) | Accepted (revisit) |
 | 0035 | Public auth paths enumerated explicitly, not by `/auth/` prefix | Accepted (revisit) |
+| 0036 | PATCH /users/me partial update cannot clear active_group_id | Accepted (revisit) |
 
 ---
 
@@ -845,3 +846,26 @@ Replace the `/auth/` prefix match with an explicit allow-list of public paths: `
 - Adding a new *public* auth endpoint now requires updating two places (filter set + SecurityConfig). This is intentional friction — public-by-default is the riskier mistake.
 - Logout reuses the exact same JWT enforcement as protected endpoints; no special-casing.
 - **Revisit when**: the public list grows — consider a single shared constant referenced by both the filter and SecurityConfig to avoid drift.
+
+---
+
+## ADR-0036: PATCH /users/me partial update cannot clear active_group_id
+
+Status: Accepted (revisit)
+Date: 2026-06-06
+
+### Context
+`PATCH /users/me` updates `display_name` and/or `active_group_id`. PATCH semantics mean a client sends only the fields it wants to change; omitted fields stay as they are. In Kotlin/Jackson the request DTO uses nullable fields with a `null` default (`displayName: String? = null`, `activeGroupId: UUID? = null`). An absent JSON field and an explicit `null` both deserialise to the same Kotlin `null`, so the service treats `null` as "leave unchanged" (`request.field?.let { ... }`).
+
+### Decision
+A `null`/absent `active_group_id` means "no change". There is therefore no way to *clear* `active_group_id` back to NULL through this endpoint. Clearing only happens implicitly via the leave/remove flows (Task 18), which set the active group to a fallback (another group or NULL) when the current one is left or the member is removed.
+
+### Alternatives Considered
+- **`JsonNullable<T>` (or an `Optional` wrapper) to distinguish absent from explicit-null**: lets the client send `"active_group_id": null` to clear it. Rejected for MVP as added complexity for a capability no current flow needs — the iOS app never asks the user to "have no active group" directly.
+- **A sentinel value (e.g. empty string) to mean clear**: rejected as a hack that muddies the contract.
+
+### Consequences
+- Simple, conventional PATCH semantics; the DTO stays a plain data class.
+- The active-group invariant (Property 16) is upheld on the *set* path here (membership is verified before assignment); the *fallback-to-null* path is owned entirely by Task 18.
+- **Revisit when**: a product need arises to let a user explicitly deselect their active group — switch the field to `JsonNullable` at that point.
+
