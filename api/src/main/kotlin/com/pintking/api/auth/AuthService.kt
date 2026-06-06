@@ -4,6 +4,7 @@ import com.pintking.api.user.UserEntity
 import com.pintking.api.user.UserRepository
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
+import java.util.UUID
 
 @Service
 class AuthService(
@@ -42,5 +43,9 @@ class AuthService(
         val jwt = jwtService.generateToken(userId)
         val newRefreshToken = refreshTokenService.generateRefreshToken(userId)
         return TokenPair(jwt = jwt, refreshToken = newRefreshToken)
+    }
+
+    fun logout(userId: UUID) {
+        refreshTokenService.deleteAllForUser(userId)
     }
 }

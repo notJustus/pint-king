@@ -4,10 +4,12 @@ import jakarta.validation.Valid
 import jakarta.validation.constraints.NotBlank
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
+import org.springframework.security.core.annotation.AuthenticationPrincipal
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
+import java.util.UUID
 
 @RestController
 @RequestMapping("/auth")
@@ -23,6 +25,12 @@ class AuthController(private val authService: AuthService) {
     fun refresh(@Valid @RequestBody request: RefreshRequest): ResponseEntity<TokenPair> {
         val tokenPair = authService.refresh(request.refreshToken)
         return ResponseEntity.ok(tokenPair)
+    }
+
+    @PostMapping("/logout")
+    fun logout(@AuthenticationPrincipal userId: UUID): ResponseEntity<Void> {
+        authService.logout(userId)
+        return ResponseEntity.noContent().build()
     }
 }
 

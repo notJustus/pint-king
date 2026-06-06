@@ -25,7 +25,9 @@ import java.time.temporal.ChronoUnit
 class AuthControllerTest(
     private val mockMvc: MockMvc,
     private val userRepository: UserRepository,
-    private val refreshTokenRepository: RefreshTokenRepository
+    private val refreshTokenRepository: RefreshTokenRepository,
+    private val refreshTokenService: RefreshTokenService,
+    private val jwtService: JwtService
 ) : DescribeSpec({
 
     beforeEach {
@@ -247,6 +249,67 @@ class AuthControllerTest(
             }.andExpect {
                 status { isBadRequest() }
             }
+        }
+    }
+
+    describe("POST /auth/logout") {
+
+        it("invalidates all refresh tokens for the authenticated user") {
+            val user = userRepository.save(UserEntity(appleId = "logout_user_001", displayName = "Test"))
+            refreshTokenService.generateRefreshToken(user.id!!)
+            refreshTokenService.generateRefreshToken(user.id!!)
+            val jwt = jwtService.generateToken(user.id!!)
+
+            mockMvc.post("/auth/logout") {
+                header("Authorization", "Bearer $jwt")
+            }.andExpect {
+                status { isNoContent() }
+            }
+
+            refreshTokenRepository.findByUserId(user.id!!).size shouldBe 0
+        }
+
+        it("makes subsequent refresh attempts fail with 401") {
+            val user = userRepository.save(UserEntity(appleId = "logout_user_002", displayName = "Test"))
+            val rawToken = refreshTokenService.generateRefreshToken(user.id!!)
+            val jwt = jwtService.generateToken(user.id!!)
+
+            mockMvc.post("/auth/logout") {
+                header("Authorization", "Bearer $jwt")
+            }.andExpect {
+                status { isNoContent() }
+            }
+
+            mockMvc.post("/auth/refresh") {
+                contentType = MediaType.APPLICATION_JSON
+                content = """{"refreshToken": "$rawToken"}"""
+            }.andExpect {
+                status { isUnauthorized() }
+            }
+        }
+
+        it("only invalidates the authenticated user's tokens") {
+            val user = userRepository.save(UserEntity(appleId = "logout_user_003", displayName = "Test"))
+            val other = userRepository.save(UserEntity(appleId = "logout_user_004", displayName = "Other"))
+            refreshTokenService.generateRefreshToken(user.id!!)
+            refreshTokenService.generateRefreshToken(other.id!!)
+            val jwt = jwtService.generateToken(user.id!!)
+
+            mockMvc.post("/auth/logout") {
+                header("Authorization", "Bearer $jwt")
+            }.andExpect {
+                status { isNoContent() }
+            }
+
+            refreshTokenRepository.findByUserId(user.id!!).size shouldBe 0
+            refreshTokenRepository.findByUserId(other.id!!).size shouldBe 1
+        }
+
+        it("returns 401 when no JWT is provided") {
+            mockMvc.post("/auth/logout")
+                .andExpect {
+                    status { isUnauthorized() }
+                }
         }
     }
 }) {

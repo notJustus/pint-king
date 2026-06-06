@@ -20,7 +20,7 @@ class JwtAuthenticationFilter(
 
     override fun shouldNotFilter(request: HttpServletRequest): Boolean {
         val path = request.requestURI
-        return path.startsWith("/auth/") || path == "/actuator/health"
+        return path in PUBLIC_PATHS || path == "/actuator/health"
     }
 
     override fun doFilterInternal(
@@ -56,5 +56,11 @@ class JwtAuthenticationFilter(
                 ErrorResponse(status = 401, message = "Unauthorized")
             )
         )
+    }
+
+    companion object {
+        // Auth endpoints that must remain reachable without a JWT.
+        // Everything else under /auth (e.g. /auth/logout) requires authentication.
+        val PUBLIC_PATHS = setOf("/auth/apple", "/auth/refresh")
     }
 }
