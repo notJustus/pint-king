@@ -100,6 +100,9 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0064 | Rank delta reads previous period's snapshot; null for all_time / first period | Accepted |
 | 0065 | Leaderboard snapshot job: per-period cron, per-group isolation, exists-check idempotency | Accepted (revisit) |
 | 0066 | Dense ranking extracted to a shared `DenseRanking` helper | Accepted |
+| 0067 | Map bounding-box via native `ST_Within` + `ST_MakeEnvelope` queries | Accepted (revisit) |
+| 0068 | Map returns a bare pin array (no pagination envelope) | Accepted (revisit) |
+| 0069 | Map scope defaults to `group`; former members flagged, never filtered | Accepted (revisit) |
 
 ---
 
@@ -1590,3 +1593,63 @@ Lift the ranking pass into `leaderboard/DenseRanking.kt` — a stateless `object
 ### Consequences
 - One implementation of dense ranking; the snapshot and the endpoint can't disagree by construction.
 - The helper's "zero-pint members sort last and don't shift loggers" property is what lets the job pass only loggers while the endpoint passes full membership and still agree on the loggers' ranks.
+
+## ADR-0067: Map bounding-box via native `ST_Within` + `ST_MakeEnvelope` queries
+
+Status: Accepted (revisit)
+Date: 2026-07-11
+
+### Context
+Task 27's `GET /pints/map` must return only pints whose `location` falls inside the client's viewport (Requirement 6.8, Property 24), pushing the spatial filter into PostGIS rather than fetching a group's whole log and filtering in Kotlin. JPQL/HQL has no portable spatial predicates, and the `location` column is a raw `geometry(Point,4326)` backed by a GIST index.
+
+### Decision
+Two `@Query(nativeQuery = true)` methods on `PintLogRepository`: `findInBoundingBox(groupId, box)` and `findInBoundingBoxForUser(groupId, userId, box)`. Both use `ST_Within(location, ST_MakeEnvelope(:swLng, :swLat, :neLng, :neLat, 4326))`. `ST_MakeEnvelope`'s argument order is `(xmin, ymin, xmax, ymax, srid)` = `(sw_lng, sw_lat, ne_lng, ne_lat, 4326)` — longitude is x, latitude is y, mirroring how the JTS `Coordinate(lng, lat)` is built on write. An explicit `location IS NOT NULL` guard makes Property 24c (null locations never returned) obvious at the query, even though `ST_Within` on a null yields null (not true) anyway. Native `SELECT *` maps cleanly back to `PintLogEntity` because the query returns whole rows.
+
+### Alternatives Considered
+- **Fetch all group pints, filter the box in Kotlin**: rejected — defeats the point of PostGIS and the GIST index; transfers the whole log to filter it down (Requirement 6.8 is explicitly about limiting data transfer).
+- **Hibernate Spatial JPQL functions (`within`, `st_within`)**: possible but adds a dialect-function dependency for two queries; raw native SQL is clearer and the GIST index is used identically.
+- **`ST_Contains`/`&&` bounding-box operator**: `ST_Within(a, b)` is the readable "a inside b" form; the `&&` index operator is what GIST uses under the hood regardless.
+
+### Consequences
+- The two queries are the only native SQL in the codebase; they bypass JPQL type-checking, so a column rename wouldn't be caught at compile time.
+- Points exactly on the envelope boundary follow `ST_Within` semantics (boundary points are *not* strictly within); acceptable for a map viewport where the box is the visible screen.
+- **Revisit when** the map needs clustering/heatmap (Post-MVP Requirement 10) or result caps — a bare `ST_Within` returns every matching pin with no limit.
+
+## ADR-0068: Map returns a bare pin array (no pagination envelope)
+
+Status: Accepted (revisit)
+Date: 2026-07-11
+
+### Context
+Every other list endpoint (`GET /pints`) returns the `{ data, page, size, total }` `PageResponse` envelope (ADR-0012/0058). The map endpoint returns pins for a viewport, not a scrollable page.
+
+### Decision
+`GET /pints/map` returns a plain `List<MapPin>` (JSON array), not a paginated envelope. The viewport bounding box *is* the bound — the client asks for exactly the region it can render, so page/size/total add nothing. The response is capped only by how many pints fall in the box.
+
+### Alternatives Considered
+- **Reuse `PageResponse`**: rejected — there is no meaningful page or total for a spatial query; the client never paginates a map, it re-queries on pan/zoom with a new box.
+
+### Consequences
+- Response shape is inconsistent with the feed, but intentionally so — a map and a feed are different access patterns.
+- No server-side cap on pin count. A pathologically large box (whole world) over a huge group returns everything. **Revisit when** clustering/heatmap lands (Requirement 10) — that's the natural place to cap or aggregate.
+
+## ADR-0069: Map scope defaults to `group`; former members flagged, never filtered
+
+Status: Accepted (revisit)
+Date: 2026-07-11
+
+### Context
+`scope` is an optional query param (`personal` | `group`). The endpoint must also render former members' pins greyed out (Requirement 6.6) rather than dropping them.
+
+### Decision
+An absent `scope` defaults to `group` (the shared view), matching the home screen's default map mode. `personal` restricts to the caller's own `user_id` via the dedicated query; `group` returns all authors' pins in the box. Former members are computed exactly as the leaderboard does (ADR-0063/Property 23): an author with pints but no current `group_members` row is flagged `isFormerMember = true` and still returned — the flag greys the pin client-side, it never removes the pin. Membership is resolved with one `findByGroupId` set after the spatial query, and authors are batch-loaded via `findAllById` (same N+1 avoidance as the feed, ADR-0059).
+
+### Alternatives Considered
+- **Make `scope` required**: rejected — a sensible default (`group`) keeps the common call terse; the client can always be explicit.
+- **Exclude former members from the map**: rejected — Requirement 6.6 wants their historical pins visible-but-distinct, same stance as the leaderboard's "Former Members" section.
+- **Personal scope ignores `group_id`**: rejected — personal pins are still scoped to the active group's map, so both `group_id` and `user_id` bound the query; a user's pints in another group don't leak in.
+
+### Consequences
+- Map and leaderboard share the same former-member definition, so a pin's grey state matches the roster's grey row.
+- `personal` scope still requires group membership (403 otherwise) — you can't view your own pins on a group you've left.
+- **Revisit when** a "my pints across all groups" map is wanted — that would need a scope that drops the `group_id` filter.
