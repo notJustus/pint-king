@@ -1,6 +1,7 @@
 package com.pintking.api.user
 
 import com.pintking.api.common.FieldError
+import com.pintking.api.common.ImageValidation
 import com.pintking.api.common.NotFoundException
 import com.pintking.api.common.UnprocessableException
 import com.pintking.api.common.ValidationException
@@ -70,7 +71,7 @@ class UserService(
         if (bytes.size > MAX_AVATAR_BYTES) {
             throw UnprocessableException("Avatar must be 5 MB or smaller")
         }
-        if (!isJpeg(bytes) && !isPng(bytes)) {
+        if (!ImageValidation.isJpegOrPng(bytes)) {
             throw UnprocessableException("Avatar must be a JPEG or PNG image")
         }
 
@@ -87,23 +88,6 @@ class UserService(
 
         return user.toProfileResponse()
     }
-
-    private fun isJpeg(bytes: ByteArray): Boolean =
-        bytes.size >= 3 &&
-            bytes[0] == 0xFF.toByte() &&
-            bytes[1] == 0xD8.toByte() &&
-            bytes[2] == 0xFF.toByte()
-
-    private fun isPng(bytes: ByteArray): Boolean =
-        bytes.size >= 8 &&
-            bytes[0] == 0x89.toByte() &&
-            bytes[1] == 0x50.toByte() && // P
-            bytes[2] == 0x4E.toByte() && // N
-            bytes[3] == 0x47.toByte() && // G
-            bytes[4] == 0x0D.toByte() &&
-            bytes[5] == 0x0A.toByte() &&
-            bytes[6] == 0x1A.toByte() &&
-            bytes[7] == 0x0A.toByte()
 
     private fun UserEntity.toProfileResponse(): UserProfileResponse {
         return UserProfileResponse(
