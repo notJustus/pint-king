@@ -150,6 +150,49 @@ class PintService(
     }
 
     /**
+     * PATCH /pints/{id} — the author amends the note and/or drink type of an existing
+     * pint (Requirement 5.11). Only fields present in the body are touched; a whitespace
+     * note clears it, mirroring create's trim-to-null. Photo and location are immutable.
+     */
+    @Transactional
+    fun updatePint(userId: UUID, pintId: UUID, request: UpdatePintRequest): PintResponse {
+        val pint = pintLogRepository.findById(pintId).orElseThrow {
+            NotFoundException("Pint not found")
+        }
+
+        // Requirement 5.11 / Property 26: only the creator can edit their own pint.
+        if (pint.userId != userId) {
+            throw ForbiddenException("You can only edit your own pints")
+        }
+
+        val errors = mutableListOf<FieldError>()
+
+        request.note?.let {
+            val trimmed = it.trim()
+            if (trimmed.length > MAX_NOTE_LENGTH) {
+                errors.add(FieldError("note", "Note must be at most $MAX_NOTE_LENGTH characters"))
+            }
+        }
+
+        request.drinkType?.let {
+            if (it !in ALLOWED_DRINK_TYPES) {
+                errors.add(
+                    FieldError("drinkType", "Drink type must be one of ${ALLOWED_DRINK_TYPES.joinToString(", ")}")
+                )
+            }
+        }
+
+        if (errors.isNotEmpty()) {
+            throw ValidationException(errors)
+        }
+
+        request.note?.let { pint.note = it.trim().ifEmpty { null } }
+        request.drinkType?.let { pint.drinkType = it }
+
+        return pint.toResponse()
+    }
+
+    /**
      * The inclusive lower bound for a period, or null for all_time (no bound).
      * Week is the current ISO week (Monday 00:00 UTC); month is the 1st at 00:00 UTC.
      */
