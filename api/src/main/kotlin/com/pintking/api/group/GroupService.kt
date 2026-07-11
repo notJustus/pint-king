@@ -6,6 +6,7 @@ import com.pintking.api.common.ForbiddenException
 import com.pintking.api.common.NotFoundException
 import com.pintking.api.common.UnprocessableException
 import com.pintking.api.common.ValidationException
+import com.pintking.api.storage.S3Service
 import com.pintking.api.user.UserRepository
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
@@ -17,7 +18,8 @@ class GroupService(
     private val groupRepository: GroupRepository,
     private val groupMemberRepository: GroupMemberRepository,
     private val groupBlockRepository: GroupBlockRepository,
-    private val userRepository: UserRepository
+    private val userRepository: UserRepository,
+    private val s3Service: S3Service
 ) {
 
     companion object {
@@ -117,6 +119,56 @@ class GroupService(
             inviteCode = group.inviteCode,
             role = GroupMemberEntity.ROLE_MEMBER,
             memberCount = groupMemberRepository.countByGroupId(group.id!!)
+        )
+    }
+
+    @Transactional(readOnly = true)
+    fun listGroups(userId: UUID): List<GroupResponse> {
+        return groupMemberRepository.findByUserId(userId).map { membership ->
+            val group = groupRepository.findById(membership.groupId).orElseThrow {
+                NotFoundException("Group not found")
+            }
+            GroupResponse(
+                id = group.id!!,
+                name = group.name,
+                inviteCode = group.inviteCode,
+                role = membership.role,
+                memberCount = groupMemberRepository.countByGroupId(group.id!!)
+            )
+        }
+    }
+
+    @Transactional(readOnly = true)
+    fun getGroup(userId: UUID, groupId: UUID): GroupDetailResponse {
+        // Requirement 7.2: reading a group you don't belong to is 403, not 404 —
+        // membership is checked before the group is even resolved so a
+        // non-existent group looks identical to one you simply can't see.
+        val membership = groupMemberRepository.findByUserIdAndGroupId(userId, groupId)
+            ?: throw ForbiddenException("You are not a member of this group")
+
+        val group = groupRepository.findById(groupId).orElseThrow {
+            NotFoundException("Group not found")
+        }
+
+        val members = groupMemberRepository.findByGroupId(groupId).map { member ->
+            val user = userRepository.findById(member.userId).orElseThrow {
+                NotFoundException("User not found")
+            }
+            GroupMemberResponse(
+                userId = user.id!!,
+                displayName = user.displayName,
+                avatarUrl = user.avatarUrl?.let { s3Service.generatePresignedUrl(it) },
+                role = member.role
+            )
+        }
+
+        return GroupDetailResponse(
+            id = group.id!!,
+            name = group.name,
+            inviteCode = group.inviteCode,
+            role = membership.role,
+            memberCount = members.size.toLong(),
+            members = members
         )
     }
 

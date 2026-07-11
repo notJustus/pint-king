@@ -3,6 +3,8 @@ package com.pintking.api.group
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.security.core.annotation.AuthenticationPrincipal
+import org.springframework.web.bind.annotation.GetMapping
+import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestMapping
@@ -32,6 +34,21 @@ class GroupController(
         val group = groupService.joinGroup(userId, request)
         return ResponseEntity.ok(group)
     }
+
+    @GetMapping
+    fun listGroups(
+        @AuthenticationPrincipal userId: UUID
+    ): ResponseEntity<List<GroupResponse>> {
+        return ResponseEntity.ok(groupService.listGroups(userId))
+    }
+
+    @GetMapping("/{id}")
+    fun getGroup(
+        @AuthenticationPrincipal userId: UUID,
+        @PathVariable id: UUID
+    ): ResponseEntity<GroupDetailResponse> {
+        return ResponseEntity.ok(groupService.getGroup(userId, id))
+    }
 }
 
 data class CreateGroupRequest(
@@ -48,4 +65,20 @@ data class GroupResponse(
     val inviteCode: String,
     val role: String,
     val memberCount: Long
+)
+
+data class GroupDetailResponse(
+    val id: UUID,
+    val name: String,
+    val inviteCode: String,
+    val role: String,
+    val memberCount: Long,
+    val members: List<GroupMemberResponse>
+)
+
+data class GroupMemberResponse(
+    val userId: UUID,
+    val displayName: String,
+    val avatarUrl: String?,
+    val role: String
 )
