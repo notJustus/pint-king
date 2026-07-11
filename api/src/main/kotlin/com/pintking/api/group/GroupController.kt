@@ -23,10 +23,23 @@ class GroupController(
         val group = groupService.createGroup(userId, request)
         return ResponseEntity.status(HttpStatus.CREATED).body(group)
     }
+
+    @PostMapping("/join")
+    fun joinGroup(
+        @AuthenticationPrincipal userId: UUID,
+        @RequestBody request: JoinGroupRequest
+    ): ResponseEntity<GroupResponse> {
+        val group = groupService.joinGroup(userId, request)
+        return ResponseEntity.ok(group)
+    }
 }
 
 data class CreateGroupRequest(
     val name: String? = null
+)
+
+data class JoinGroupRequest(
+    val inviteCode: String? = null
 )
 
 data class GroupResponse(

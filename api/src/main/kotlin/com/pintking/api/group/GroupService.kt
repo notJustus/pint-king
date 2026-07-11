@@ -1,6 +1,8 @@
 package com.pintking.api.group
 
+import com.pintking.api.common.ConflictException
 import com.pintking.api.common.FieldError
+import com.pintking.api.common.ForbiddenException
 import com.pintking.api.common.NotFoundException
 import com.pintking.api.common.UnprocessableException
 import com.pintking.api.common.ValidationException
@@ -14,6 +16,7 @@ import java.util.UUID
 class GroupService(
     private val groupRepository: GroupRepository,
     private val groupMemberRepository: GroupMemberRepository,
+    private val groupBlockRepository: GroupBlockRepository,
     private val userRepository: UserRepository
 ) {
 
@@ -70,6 +73,49 @@ class GroupService(
             name = group.name,
             inviteCode = group.inviteCode,
             role = GroupMemberEntity.ROLE_ADMIN,
+            memberCount = groupMemberRepository.countByGroupId(group.id!!)
+        )
+    }
+
+    @Transactional
+    fun joinGroup(userId: UUID, request: JoinGroupRequest): GroupResponse {
+        val inviteCode = request.inviteCode?.trim().orEmpty()
+
+        // Requirement 3.7: an unknown code is a 404, not a validation error.
+        val group = groupRepository.findByInviteCode(inviteCode)
+            ?: throw NotFoundException("Group not found")
+
+        // Requirement 3.8: already a member → 409.
+        if (groupMemberRepository.findByUserIdAndGroupId(userId, group.id!!) != null) {
+            throw ConflictException("You are already a member of this group")
+        }
+
+        // Requirement 3.9: a previously-removed member is blocked → 403.
+        if (groupBlockRepository.findByGroupIdAndUserId(group.id!!, userId) != null) {
+            throw ForbiddenException("You have been removed from this group")
+        }
+
+        groupMemberRepository.save(
+            GroupMemberEntity(
+                userId = userId,
+                groupId = group.id!!,
+                role = GroupMemberEntity.ROLE_MEMBER
+            )
+        )
+
+        // Requirement 3.22: joining your first group sets it as active.
+        val user = userRepository.findById(userId).orElseThrow {
+            NotFoundException("User not found")
+        }
+        if (user.activeGroupId == null) {
+            user.activeGroupId = group.id
+        }
+
+        return GroupResponse(
+            id = group.id!!,
+            name = group.name,
+            inviteCode = group.inviteCode,
+            role = GroupMemberEntity.ROLE_MEMBER,
             memberCount = groupMemberRepository.countByGroupId(group.id!!)
         )
     }
