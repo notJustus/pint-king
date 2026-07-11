@@ -1,15 +1,21 @@
 package com.pintking.api.group
 
+import com.pintking.api.common.BadRequestException
 import com.pintking.api.common.ConflictException
 import com.pintking.api.common.FieldError
 import com.pintking.api.common.ForbiddenException
 import com.pintking.api.common.NotFoundException
 import com.pintking.api.common.UnprocessableException
 import com.pintking.api.common.ValidationException
+import com.pintking.api.leaderboard.LeaderboardSnapshotRepository
+import com.pintking.api.pint.PintLogRepository
+import com.pintking.api.storage.S3CleanupDispatcher
 import com.pintking.api.storage.S3Service
 import com.pintking.api.user.UserRepository
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
+import org.springframework.transaction.support.TransactionSynchronization
+import org.springframework.transaction.support.TransactionSynchronizationManager
 import java.security.SecureRandom
 import java.time.Instant
 import java.util.UUID
@@ -19,8 +25,11 @@ class GroupService(
     private val groupRepository: GroupRepository,
     private val groupMemberRepository: GroupMemberRepository,
     private val groupBlockRepository: GroupBlockRepository,
+    private val pintLogRepository: PintLogRepository,
+    private val leaderboardSnapshotRepository: LeaderboardSnapshotRepository,
     private val userRepository: UserRepository,
-    private val s3Service: S3Service
+    private val s3Service: S3Service,
+    private val s3CleanupDispatcher: S3CleanupDispatcher
 ) {
 
     companion object {
@@ -153,6 +162,114 @@ class GroupService(
             inviteCode = group.inviteCode,
             role = membership.role,
             memberCount = groupMemberRepository.countByGroupId(group.id!!)
+        )
+    }
+
+    /**
+     * DELETE /groups/{id}/members/{targetUserId} — one endpoint, two flows keyed on
+     * whether the target is the caller themselves (leave) or someone else (admin removal).
+     */
+    @Transactional
+    fun removeMember(callerId: UUID, groupId: UUID, targetUserId: UUID) {
+        if (callerId == targetUserId) {
+            leaveGroup(callerId, groupId)
+        } else {
+            removeOtherMember(callerId, groupId, targetUserId)
+        }
+    }
+
+    private fun leaveGroup(userId: UUID, groupId: UUID) {
+        // A non-member (and, by extension, a non-existent group) is a 403 — same
+        // information-hiding stance as getGroup/updateGroup.
+        val membership = groupMemberRepository.findByUserIdAndGroupId(userId, groupId)
+            ?: throw ForbiddenException("You are not a member of this group")
+
+        val others = groupMemberRepository.findByGroupId(groupId)
+            .filter { it.userId != userId }
+
+        val soleAdmin = membership.role == GroupMemberEntity.ROLE_ADMIN &&
+            others.none { it.role == GroupMemberEntity.ROLE_ADMIN }
+
+        // Requirement 3.18: the sole admin can't abandon a group that still has members.
+        if (soleAdmin && others.isNotEmpty()) {
+            throw BadRequestException("Promote another admin before leaving")
+        }
+
+        // Requirement 3.23: detach the active group before the row it points at may vanish.
+        clearActiveGroupIfPointingAt(userId, groupId)
+
+        if (others.isEmpty()) {
+            // Sole member leaving → the group has no reason to exist.
+            deleteGroup(groupId)
+        } else {
+            groupMemberRepository.deleteByUserIdAndGroupId(userId, groupId)
+        }
+    }
+
+    private fun removeOtherMember(callerId: UUID, groupId: UUID, targetUserId: UUID) {
+        // Requirement 14.3: only an admin may remove another member.
+        val callerMembership = groupMemberRepository.findByUserIdAndGroupId(callerId, groupId)
+        if (callerMembership == null || callerMembership.role != GroupMemberEntity.ROLE_ADMIN) {
+            throw ForbiddenException("Only a group admin can remove a member")
+        }
+
+        // The target must actually be in the group.
+        groupMemberRepository.findByUserIdAndGroupId(targetUserId, groupId)
+            ?: throw NotFoundException("User is not a member of this group")
+
+        // Requirement 3.23: fall the removed user's active group back before removal.
+        clearActiveGroupIfPointingAt(targetUserId, groupId)
+
+        // Requirement 3.14 / 3.15: drop the membership and block re-joining. Their
+        // pint_logs are deliberately left in place (retained as "former member" data).
+        groupMemberRepository.deleteByUserIdAndGroupId(targetUserId, groupId)
+        groupBlockRepository.save(
+            GroupBlockEntity(groupId = groupId, userId = targetUserId)
+        )
+    }
+
+    /**
+     * Requirement 3.23: if [groupId] is the user's active group, move it to another
+     * group they still belong to (longest-standing), or null if none remain. Runs
+     * before the membership/group is deleted so the FK never dangles.
+     */
+    private fun clearActiveGroupIfPointingAt(userId: UUID, groupId: UUID) {
+        val user = userRepository.findById(userId).orElseThrow {
+            NotFoundException("User not found")
+        }
+        if (user.activeGroupId != groupId) return
+
+        user.activeGroupId = groupMemberRepository.findByUserId(userId)
+            .filter { it.groupId != groupId }
+            .minByOrNull { it.joinedAt }
+            ?.groupId
+    }
+
+    /**
+     * Deletes a group and everything that references it, then dispatches async S3
+     * cleanup of the photos once the transaction commits. Mirrors AccountService.
+     */
+    private fun deleteGroup(groupId: UUID) {
+        val s3Keys = pintLogRepository.findByGroupIdOrderByLoggedAtDesc(groupId).map { it.photoUrl }
+
+        pintLogRepository.deleteByGroupId(groupId)
+        groupBlockRepository.deleteByGroupId(groupId)
+        leaderboardSnapshotRepository.deleteByGroupId(groupId)
+        groupMemberRepository.deleteByGroupId(groupId)
+        groupRepository.deleteById(groupId)
+
+        dispatchS3CleanupAfterCommit(s3Keys)
+    }
+
+    private fun dispatchS3CleanupAfterCommit(keys: List<String>) {
+        if (keys.isEmpty()) return
+        // Only fire once the DB delete is durable; a rollback must not orphan-delete photos.
+        TransactionSynchronizationManager.registerSynchronization(
+            object : TransactionSynchronization {
+                override fun afterCommit() {
+                    s3CleanupDispatcher.deleteObjects(keys)
+                }
+            }
         )
     }
 

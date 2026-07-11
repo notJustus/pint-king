@@ -9,5 +9,6 @@ interface GroupMemberRepository : JpaRepository<GroupMemberEntity, UUID> {
     fun findByGroupId(groupId: UUID): List<GroupMemberEntity>
     fun countByGroupId(groupId: UUID): Long
     fun deleteByUserId(userId: UUID)
+    fun deleteByUserIdAndGroupId(userId: UUID, groupId: UUID)
     fun deleteByGroupId(groupId: UUID)
 }

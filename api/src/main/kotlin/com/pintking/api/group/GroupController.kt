@@ -3,6 +3,7 @@ package com.pintking.api.group
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.security.core.annotation.AuthenticationPrincipal
+import org.springframework.web.bind.annotation.DeleteMapping
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PatchMapping
 import org.springframework.web.bind.annotation.PathVariable
@@ -58,6 +59,16 @@ class GroupController(
         @RequestBody request: UpdateGroupRequest
     ): ResponseEntity<GroupResponse> {
         return ResponseEntity.ok(groupService.updateGroup(userId, id, request))
+    }
+
+    @DeleteMapping("/{id}/members/{userId}")
+    fun removeMember(
+        @AuthenticationPrincipal callerId: UUID,
+        @PathVariable id: UUID,
+        @PathVariable userId: UUID
+    ): ResponseEntity<Void> {
+        groupService.removeMember(callerId, id, userId)
+        return ResponseEntity.noContent().build()
     }
 }
 

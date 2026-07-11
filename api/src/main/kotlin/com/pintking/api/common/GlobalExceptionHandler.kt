@@ -25,6 +25,11 @@ class GlobalExceptionHandler {
         return buildResponse(HttpStatus.NOT_FOUND, ex.message!!)
     }
 
+    @ExceptionHandler(BadRequestException::class)
+    fun handleBadRequest(ex: BadRequestException): ResponseEntity<ErrorResponse> {
+        return buildResponse(HttpStatus.BAD_REQUEST, ex.message!!)
+    }
+
     @ExceptionHandler(ConflictException::class)
     fun handleConflict(ex: ConflictException): ResponseEntity<ErrorResponse> {
         return buildResponse(HttpStatus.CONFLICT, ex.message!!)
