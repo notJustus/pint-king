@@ -98,6 +98,8 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0062 | Period logic lifted to a shared `Periods` helper | Accepted |
 | 0063 | Leaderboard dense ranking, zero-pint members, former-member split | Accepted (revisit) |
 | 0064 | Rank delta reads previous period's snapshot; null for all_time / first period | Accepted |
+| 0065 | Leaderboard snapshot job: per-period cron, per-group isolation, exists-check idempotency | Accepted (revisit) |
+| 0066 | Dense ranking extracted to a shared `DenseRanking` helper | Accepted |
 
 ---
 
@@ -1542,3 +1544,49 @@ Delta = `previousSnapshotRank − currentRank` (positive = climbed). The service
 - Until Task 26 writes snapshots, every week/month delta is null — correct behaviour, just no movement shown yet.
 - The delta's correctness is entirely coupled to the snapshot job writing the same `period_key` format `Periods` produces; both now share that helper.
 - Members who leave and rejoin, or who had no rank last period, correctly show no delta rather than a misleading jump.
+
+---
+
+## ADR-0065: Leaderboard snapshot job — per-period cron, per-group isolation, exists-check idempotency
+
+Status: Accepted (revisit)
+Date: 2026-07-11
+
+### Context
+Task 26 writes the `leaderboard_snapshots` rows that ADR-0005/ADR-0064's delta reads back. It runs at period boundaries and must (a) snapshot the *completed* period, (b) be idempotent on re-runs, (c) store nothing for groups with no pints in the period, and (d) produce rankings identical to what the read endpoint shows.
+
+### Decision
+A `@Scheduled` `LeaderboardSnapshotJob` (`@EnableScheduling` on the app) with two cron entries, both UTC: weekly `0 5 0 * * MON` and monthly `0 5 0 1 * *`. Each computes a `Periods.CompletedPeriod` (the just-ended week/month, as a `(periodType, periodKey, from, until)` tuple) and loops over all groups. `CompletedPeriod` reuses `previousSnapshotKey` for its key and `lowerBound` for `until`, so the boundary and key format can't drift from the reader. Counts come from a new **bounded** query `countByUserBetween(groupId, from, until)` — a past period needs both ends, unlike the live feed's lower-bound-only `countByUserSince`. Only current members who logged in the period are ranked and stored (former members excluded per ADR-0004; zero-pint members omitted because dense ranking makes their absence invisible to the loggers' ranks, and this yields "no pints → no rows" for free). Idempotency is a pre-insert `existsByGroupIdAndPeriodTypeAndPeriodKey` check, backstopped by the table's unique `(group, user, period_type, period_key)` constraint. Each group is wrapped in a try/catch so one group's failure is logged and skipped, not fatal to the run.
+
+### Alternatives Considered
+- **Compute `until` independently in the job**: rejected — deriving it from `Periods.lowerBound(current)` guarantees the completed-period boundary is exactly the current-period boundary the feed uses.
+- **Rely solely on the unique constraint for idempotency (no pre-check)**: the constraint is the real guarantee, but a naive `saveAll` on a re-run would throw a `DataIntegrityViolation` mid-batch; the exists-check makes a re-run a clean no-op.
+- **One transaction for the whole job**: rejected — a single bad group would roll back every other group's snapshot. Per-group try/catch isolates failures; `saveAll` still writes each group's rows atomically.
+- **Snapshot zero-pint members too (to mirror the endpoint's row-for-every-member)**: unnecessary — the snapshot only feeds the delta lookup, which is keyed by user; a member absent from the snapshot correctly yields a null delta, same as a brand-new member.
+
+### Consequences
+- The job and the read endpoint share `Periods` and `DenseRanking`, so a snapshot's ranks match what the leaderboard showed at period close.
+- Snapshots are UTC-boundary, inheriting ADR-0057/0062's revisit condition for per-user timezones.
+- A missed run (downtime across the boundary) leaves that period's deltas null until manually backfilled — acceptable per ADR-0005.
+- **Revisit when** group count grows enough that `findAll()` over every group per run is costly (page it, or shard the job), or a manual/backfill trigger is needed.
+
+---
+
+## ADR-0066: Dense ranking extracted to a shared `DenseRanking` helper
+
+Status: Accepted
+Date: 2026-07-11
+
+### Context
+Task 25's read endpoint and Task 26's snapshot job both assign dense ranks to a group's members by pint count. Duplicating the ranking pass would let the stored snapshot and the live leaderboard drift — exactly the delta-baseline mismatch ADR-0064 warns about.
+
+### Decision
+Lift the ranking pass into `leaderboard/DenseRanking.kt` — a stateless `object` with `rank(userIds, counts): List<Ranked>`. It sorts by count descending and assigns dense ranks (equal counts share a rank; next distinct count is +1). `LeaderboardService.rankMembers` now maps its output into `LeaderboardEntry` (adding display name, avatar, delta, crown); the job maps the same output into `LeaderboardSnapshotEntity`. The helper deliberately knows nothing about users, deltas, or persistence — just IDs and counts in, ranks out.
+
+### Alternatives Considered
+- **Leave ranking inlined in each caller**: rejected — two copies of Property 20's logic that must stay byte-for-byte identical to keep deltas correct.
+- **Rank in SQL with `DENSE_RANK()`**: still deferred (see ADR-0063) — the shared Kotlin helper keeps ranking next to the delta/crown decoration and is trivially unit-testable.
+
+### Consequences
+- One implementation of dense ranking; the snapshot and the endpoint can't disagree by construction.
+- The helper's "zero-pint members sort last and don't shift loggers" property is what lets the job pass only loggers while the endpoint passes full membership and still agree on the loggers' ranks.
