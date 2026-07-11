@@ -81,6 +81,8 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0045 | Group join check order: not-found → already-member → blocked | Accepted (revisit) |
 | 0046 | Group detail hides non-members behind 403 (never 404) | Accepted (revisit) |
 | 0047 | Group rename reuses the 403-before-404 auth pattern, admin-only | Accepted (revisit) |
+| 0048 | Single remove/leave endpoint branches on caller-vs-target identity | Accepted (revisit) |
+| 0049 | `BadRequestException` for message-only 400s (sole-admin leave) | Accepted (revisit) |
 
 ---
 
@@ -1142,3 +1144,48 @@ A non-existent group also yields 403, because a random UUID has no membership ro
 - Validation-before-auth means an unauthenticated-but-malformed body is still gated by the JWT filter (401) before reaching the controller; within the controller, a member/non-member/admin distinction never affects the 400 path.
 - `updated_at` is set manually (`group.updatedAt = Instant.now()`) rather than via a JPA lifecycle callback, matching how `UserService` handles its own `updated_at`. **Revisit when** we adopt JPA auditing (`@PreUpdate` / `@LastModifiedDate`) project-wide.
 - The response is the same `GroupResponse` shape as create/join (id, name, inviteCode, role, memberCount), so the client reuses one decoder.
+
+---
+
+## ADR-0048: Single remove/leave endpoint branches on caller-vs-target identity
+
+Status: Accepted (revisit)
+Date: 2026-07-11
+
+### Context
+`DELETE /groups/{id}/members/{userId}` serves two conceptually different actions (Requirements 3.11/3.14/3.15 for admin removal; 3.17/3.18 for voluntary leave). They share a URL but differ in who is allowed to call them, what side effects they have (a block row on removal, none on leave), and their failure modes (sole-admin-with-members is a 400 only on the leave path).
+
+### Decision
+Branch inside `GroupService.removeMember` on whether the path `userId` equals the authenticated caller:
+- **`userId == caller` → leave flow.** Sole admin with other members → 400 "Promote another admin before leaving"; sole member → delete the group; otherwise → drop the membership. No block row is written — a voluntary leaver may re-join.
+- **`userId != caller` → remove flow (admin-only).** Non-member/non-admin caller → 403; target not a member → 404; otherwise delete the membership **and** insert a `group_blocks` row so the removed user can't re-join with the invite code (Requirement 3.9). Their `pint_logs` are deliberately left in place.
+
+### Alternatives Considered
+- **Two separate endpoints** (`DELETE .../members/{id}` for removal, `POST .../leave` for self): clearer intent, but the iOS client would still send the caller's own id to leave, and the REST-canonical "delete my membership resource" is exactly `DELETE .../members/{me}`. One endpoint keeps the URL space smaller. Rejected for MVP; revisit if the flows diverge further.
+- **Block on leave too**: would prevent a user who left from re-joining, contradicting Requirement 3.17's "voluntary" framing. Rejected — blocks are a moderation tool, not a self-service one.
+
+### Consequences
+- The removed/leaving user's active-group fallback (Requirement 3.23) runs on the **affected** user, not the caller — on removal that's the target, on leave it's the caller. A shared `clearActiveGroupIfPointingAt(userId, groupId)` handles both.
+- A sole-member leave reuses the same group-teardown as account deletion (delete pints/blocks/snapshots/members, then the group, then async S3 cleanup after commit). That logic now lives in **two** places (`AccountService.deleteGroup` and `GroupService.deleteGroup`); **revisit when** a third caller appears — extract a `GroupTeardownService`.
+- Fallback and teardown order matters: the active-group reference is cleared **before** the group/membership row is deleted, so the `users.active_group_id → groups` FK never dangles mid-transaction.
+
+---
+
+## ADR-0049: `BadRequestException` for message-only 400s
+
+Status: Accepted (revisit)
+Date: 2026-07-11
+
+### Context
+The sole-admin-leave case must return 400 with a plain explanatory message ("Promote another admin before leaving"). The existing `ValidationException` always serialises a `errors: [{field, message}]` array, which is wrong here — there's no offending *field*, the whole request is validly formed but rejected by group state. No other exception mapped to 400.
+
+### Decision
+Add a `BadRequestException(message)` that the `GlobalExceptionHandler` maps to `400` with the standard message-only `ErrorResponse` (no `errors` array), exactly as `ForbiddenException`/`NotFoundException` are handled. Use it for bad *request state*; keep `ValidationException` for malformed *input fields*.
+
+### Alternatives Considered
+- **Reuse `ValidationException` with a synthetic field** (e.g. `field = "role"`): misleads the client into thinking a form field is wrong. Rejected.
+- **Reuse `UnprocessableException` (422)**: 422 is already taken for the group-creation limit; the spec (Task 18) explicitly says 400 for this case, and semantically the request is malformed-in-context, not un-processable-entity. Rejected to stay faithful to the task.
+
+### Consequences
+- There are now two distinct 400 shapes: field-level (`ValidationException` / bean-validation) and message-only (`BadRequestException`). Clients must handle both, but they already tolerate an absent `errors` array (it's nullable in `ErrorResponse`).
+- **Revisit when** we have several message-only 400s and want to standardise an error `code` enum instead of matching on human-readable strings.
