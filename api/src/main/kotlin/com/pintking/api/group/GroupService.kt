@@ -166,6 +166,33 @@ class GroupService(
     }
 
     /**
+     * POST /groups/{id}/invite-code/regenerate — an admin mints a fresh invite code,
+     * which immediately invalidates the old one (Requirement 3.10). Same admin-only,
+     * 403-before-404 auth stance as updateGroup/promoteMember.
+     */
+    @Transactional
+    fun regenerateInviteCode(userId: UUID, groupId: UUID): GroupResponse {
+        val membership = groupMemberRepository.findByUserIdAndGroupId(userId, groupId)
+        if (membership == null || membership.role != GroupMemberEntity.ROLE_ADMIN) {
+            throw ForbiddenException("Only a group admin can regenerate the invite code")
+        }
+
+        val group = groupRepository.findById(groupId).orElseThrow {
+            NotFoundException("Group not found")
+        }
+        group.inviteCode = generateUniqueInviteCode()
+        group.updatedAt = Instant.now()
+
+        return GroupResponse(
+            id = group.id!!,
+            name = group.name,
+            inviteCode = group.inviteCode,
+            role = membership.role,
+            memberCount = groupMemberRepository.countByGroupId(group.id!!)
+        )
+    }
+
+    /**
      * POST /groups/{id}/members/{targetUserId}/promote — an admin raises another
      * member to admin. Idempotent: promoting an existing admin is a no-op success.
      */

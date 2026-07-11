@@ -71,6 +71,14 @@ class GroupController(
         return ResponseEntity.noContent().build()
     }
 
+    @PostMapping("/{id}/invite-code/regenerate")
+    fun regenerateInviteCode(
+        @AuthenticationPrincipal userId: UUID,
+        @PathVariable id: UUID
+    ): ResponseEntity<GroupResponse> {
+        return ResponseEntity.ok(groupService.regenerateInviteCode(userId, id))
+    }
+
     @DeleteMapping("/{id}/members/{userId}")
     fun removeMember(
         @AuthenticationPrincipal callerId: UUID,
