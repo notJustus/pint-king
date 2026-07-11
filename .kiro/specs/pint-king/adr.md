@@ -84,6 +84,7 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0048 | Single remove/leave endpoint branches on caller-vs-target identity | Accepted (revisit) |
 | 0049 | `BadRequestException` for message-only 400s (sole-admin leave) | Accepted (revisit) |
 | 0050 | Promotion mutates role in place, idempotent, no demotion counterpart | Accepted (revisit) |
+| 0051 | Invite-code regeneration reuses the generator, invalidation is implicit | Accepted (revisit) |
 
 ---
 
@@ -1213,3 +1214,25 @@ Load the target's `GroupMemberEntity` and set `role = ROLE_ADMIN` directly; JPA 
 - Auth-before-existence ordering means a non-admin promoting a stranger gets 403 (not 404): the caller learns nothing about who is or isn't in a group they can't administer — same information-hiding stance as ADR-0047/0048.
 - No block/active-group side effects, so promotion doesn't touch `group_blocks` or `users.active_group_id` — it's the simplest of the admin actions.
 - **Revisit when** demotion or "transfer admin" is added; promotion + the sole-admin-leave rule (ADR-0048) together imply a group can accumulate admins but the last one can never leave without promoting first.
+
+---
+
+## ADR-0051: Invite-code regeneration reuses the generator, invalidation is implicit
+
+Status: Accepted (revisit)
+Date: 2026-07-11
+
+### Context
+`POST /groups/{id}/invite-code/regenerate` (Requirement 3.10) lets an admin mint a fresh invite code and must invalidate the previous one immediately. The fourth admin-gated group action, structurally identical to `updateGroup` (ADR-0047): resolve caller membership → 403 if not an admin, then mutate the group.
+
+### Decision
+Reuse the existing private `generateUniqueInviteCode()` (retry-on-collision, bounded attempts — ADR from Task 14) rather than a second generation path. Overwrite `group.inviteCode` in place; JPA dirty-checking flushes on commit. "Invalidation" of the old code is a free consequence: `invite_code` is a unique column with a single value, so `findByInviteCode(old)` returns nothing once overwritten — no tombstone, no separate revoke step. Return the updated `GroupResponse` (200 with body) so the client gets the new code to display/share directly.
+
+### Alternatives Considered
+- **Return 204 No Content** (like promote/remove): the whole point of this call is to hand the caller a new code, so echoing it back in the body is the natural fit — unlike promote, where the mutated value is uninteresting. Chose 200 + body.
+- **Track historical/revoked codes** (a `revoked_invite_codes` table or a `valid` flag): unnecessary for MVP. A group has exactly one live code; old codes simply cease to resolve. Rejected as over-engineering. Revisit if we ever need to audit who shared which code, or support multiple simultaneous codes.
+
+### Consequences
+- Auth-before-existence ordering: a non-admin (or non-member) regenerating gets 403, never leaking whether the group exists — same stance as ADR-0047/0050.
+- Because generation reuses the shared helper, the invite-code format guarantee (8 alphanumeric, collision-checked) holds identically for created and regenerated codes.
+- **Revisit when** invite links/QR codes are added (Requirement 3.10 also names those): they'll need to be derived from the current code so regeneration invalidates them too.
