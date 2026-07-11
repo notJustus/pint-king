@@ -83,6 +83,7 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0047 | Group rename reuses the 403-before-404 auth pattern, admin-only | Accepted (revisit) |
 | 0048 | Single remove/leave endpoint branches on caller-vs-target identity | Accepted (revisit) |
 | 0049 | `BadRequestException` for message-only 400s (sole-admin leave) | Accepted (revisit) |
+| 0050 | Promotion mutates role in place, idempotent, no demotion counterpart | Accepted (revisit) |
 
 ---
 
@@ -1189,3 +1190,26 @@ Add a `BadRequestException(message)` that the `GlobalExceptionHandler` maps to `
 ### Consequences
 - There are now two distinct 400 shapes: field-level (`ValidationException` / bean-validation) and message-only (`BadRequestException`). Clients must handle both, but they already tolerate an absent `errors` array (it's nullable in `ErrorResponse`).
 - **Revisit when** we have several message-only 400s and want to standardise an error `code` enum instead of matching on human-readable strings.
+
+---
+
+## ADR-0050: Promotion mutates role in place, idempotent, no demotion counterpart
+
+Status: Accepted (revisit)
+Date: 2026-07-11
+
+### Context
+`POST /groups/{id}/members/{userId}/promote` (Requirement 3.12) raises a member to admin. It's the third admin-gated group action and reuses the now-familiar shape: resolve caller membership → 403 if not an admin, resolve target membership → 404 if not present, then act. Task 19 explicitly requires promoting an already-admin to be a no-op success (idempotent).
+
+### Decision
+Load the target's `GroupMemberEntity` and set `role = ROLE_ADMIN` directly; JPA dirty-checking flushes the update on commit — no explicit save. Promoting an existing admin sets `admin` over `admin`, which is a silent no-op, satisfying idempotency for free. Return 204 No Content (no body), matching the remove/leave endpoint's response shape rather than returning the mutated membership.
+
+### Alternatives Considered
+- **Return the updated membership/group** (200 with body): the iOS client already refetches group detail after admin actions, and the other membership-mutating endpoint (remove/leave) returns 204. Chose 204 for consistency. Revisit if the client needs the new role echoed back.
+- **Guard on current role and skip the write when already admin**: unnecessary — assigning the same value is already a no-op, and the guard adds a branch with no observable difference. Rejected.
+- **A `demote` counterpart in the same task**: out of scope — no requirement covers demotion, and it raises the "can't remove the last admin" question that leave-flow already answers. Deferred.
+
+### Consequences
+- Auth-before-existence ordering means a non-admin promoting a stranger gets 403 (not 404): the caller learns nothing about who is or isn't in a group they can't administer — same information-hiding stance as ADR-0047/0048.
+- No block/active-group side effects, so promotion doesn't touch `group_blocks` or `users.active_group_id` — it's the simplest of the admin actions.
+- **Revisit when** demotion or "transfer admin" is added; promotion + the sole-admin-leave rule (ADR-0048) together imply a group can accumulate admins but the last one can never leave without promoting first.
