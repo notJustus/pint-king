@@ -4,6 +4,7 @@ import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.security.core.annotation.AuthenticationPrincipal
 import org.springframework.web.bind.annotation.GetMapping
+import org.springframework.web.bind.annotation.PatchMapping
 import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
@@ -49,6 +50,15 @@ class GroupController(
     ): ResponseEntity<GroupDetailResponse> {
         return ResponseEntity.ok(groupService.getGroup(userId, id))
     }
+
+    @PatchMapping("/{id}")
+    fun updateGroup(
+        @AuthenticationPrincipal userId: UUID,
+        @PathVariable id: UUID,
+        @RequestBody request: UpdateGroupRequest
+    ): ResponseEntity<GroupResponse> {
+        return ResponseEntity.ok(groupService.updateGroup(userId, id, request))
+    }
 }
 
 data class CreateGroupRequest(
@@ -57,6 +67,10 @@ data class CreateGroupRequest(
 
 data class JoinGroupRequest(
     val inviteCode: String? = null
+)
+
+data class UpdateGroupRequest(
+    val name: String? = null
 )
 
 data class GroupResponse(

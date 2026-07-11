@@ -11,6 +11,7 @@ import com.pintking.api.user.UserRepository
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import java.security.SecureRandom
+import java.time.Instant
 import java.util.UUID
 
 @Service
@@ -118,6 +119,39 @@ class GroupService(
             name = group.name,
             inviteCode = group.inviteCode,
             role = GroupMemberEntity.ROLE_MEMBER,
+            memberCount = groupMemberRepository.countByGroupId(group.id!!)
+        )
+    }
+
+    @Transactional
+    fun updateGroup(userId: UUID, groupId: UUID, request: UpdateGroupRequest): GroupResponse {
+        val name = request.name?.trim().orEmpty()
+        if (name.length !in 1..50) {
+            throw ValidationException(
+                listOf(FieldError("name", "Group name must be between 1 and 50 characters"))
+            )
+        }
+
+        // Requirement 10.3: only a Group_Admin may rename the group. A non-member
+        // and a non-admin member are both rejected with 403, and — as with getGroup —
+        // resolving membership before the group means a non-existent group is
+        // indistinguishable from one the caller can't touch.
+        val membership = groupMemberRepository.findByUserIdAndGroupId(userId, groupId)
+        if (membership == null || membership.role != GroupMemberEntity.ROLE_ADMIN) {
+            throw ForbiddenException("Only a group admin can update the group")
+        }
+
+        val group = groupRepository.findById(groupId).orElseThrow {
+            NotFoundException("Group not found")
+        }
+        group.name = name
+        group.updatedAt = Instant.now()
+
+        return GroupResponse(
+            id = group.id!!,
+            name = group.name,
+            inviteCode = group.inviteCode,
+            role = membership.role,
             memberCount = groupMemberRepository.countByGroupId(group.id!!)
         )
     }
