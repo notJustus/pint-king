@@ -73,6 +73,9 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0037 | Image type validation by magic bytes, not Content-Type | Accepted (revisit) |
 | 0038 | Avatar re-upload deletes old object after persisting new key | Accepted (revisit) |
 | 0039 | Servlet multipart limit set above all business size limits | Accepted (revisit) |
+| 0040 | Account deletion: DB cascade in one transaction, S3 cleanup async after commit | Accepted (revisit) |
+| 0041 | Account deletion reassigns `groups.created_by` to satisfy the NOT NULL creator FK | Accepted (revisit) |
+| 0042 | Longest-standing member (`joined_at` ascending) inherits admin / ownership on deletion | Accepted (revisit) |
 
 ---
 
@@ -941,3 +944,74 @@ Set the servlet `max-file-size` **strictly above the largest business size limit
 ### Note for Task 21 (POST /pints)
 Pint photos have a **10 MB** business limit — currently *equal* to the servlet `max-file-size`, so the in-code 10 MB check would be dead at the boundary (over-limit → 500, not 422). **Before/while implementing Task 21:** raise `spring.servlet.multipart.max-file-size` above 10 MB (and bump `max-request-size` accordingly) so the in-code 10 MB check is the one that fires and returns 422, as the task's test matrix requires ("Photo over 10 MB → 422"). The avatar endpoint already works because 5 MB < 10 MB; this only needs fixing for the pint-photo path.
 
+
+---
+
+## ADR-0040: Account deletion — DB cascade in one transaction, S3 cleanup async after commit
+
+Status: Accepted (revisit)
+Date: 2026-07-09
+
+### Context
+Deleting an account (Property 28) must remove the user and everything that references them across seven tables, plus their photos in S3. The DB and S3 cannot participate in one transaction. Requirement 8.6 mandates "no partial deletion state" at the DB level; the design doc (§4 Account Deletion) prescribes a single DB transaction followed by an async S3 batch.
+
+### Decision
+`AccountService.deleteAccount` runs entirely inside one `@Transactional` method. It:
+1. Collects the S3 keys (all `pint_logs.photo_url` for the user + `users.avatar_url`) **before** deleting the rows that hold them.
+2. Resolves each group's fate (see ADR-0042), reassigns creator ownership (ADR-0041), then bulk-deletes `pint_logs`, `refresh_tokens`, `leaderboard_snapshots`, `group_blocks`, `group_members`, and finally the `users` row.
+3. Registers a `TransactionSynchronization.afterCommit` hook that hands the collected keys to `S3CleanupDispatcher.deleteObjects`, an `@Async` (`@EnableAsync`) fire-and-forget method. Per-key failures are logged and left for the orphan-cleanup job (Task 28).
+
+### Alternatives Considered
+- **Delete S3 objects inline before/after the DB work, synchronously**: blocks the request on S3 latency for a potentially large batch, and an inline delete that runs before commit would orphan-delete live photos if the transaction later rolls back. Rejected.
+- **Register the S3 dispatch with `@Async` but call it directly (not via `afterCommit`)**: the async task could start before the transaction commits (or after a rollback), deleting photos for a user who was never actually deleted. `afterCommit` guarantees the DB delete is durable first. Chosen.
+- **DB-level `ON DELETE CASCADE` foreign keys**: would remove the explicit per-table delete code, but the schema (V2–V8) defines plain `REFERENCES` without cascade, and the group-fate logic (promotion / group deletion / ownership handoff) needs application-level decisions that a blanket cascade can't express. Rejected for MVP; revisit if the delete list grows.
+
+### Consequences
+- DB deletion is atomic: a failure anywhere rolls back the whole cascade, so there is never a half-deleted user.
+- S3 cleanup is eventually consistent, not transactional. A crash between commit and the async dispatch, or an S3 outage, leaves orphaned objects — bounded and reclaimed by the orphan-cleanup job.
+- The default `@Async` executor is Spring's `SimpleAsyncTaskExecutor` (a new thread per call, unbounded). Fine for the current low volume. **Revisit when**: deletion volume grows — configure a bounded pool, or move to the SQS + DLQ design the doc mentions.
+
+---
+
+## ADR-0041: Account deletion reassigns `groups.created_by` to satisfy the NOT NULL creator FK
+
+Status: Accepted (revisit)
+Date: 2026-07-09
+
+### Context
+`groups.created_by` is `UUID NOT NULL REFERENCES users(id)` (V3). When a user who created a group deletes their account but the group survives (it has other members), deleting the `users` row would violate this FK — the group would point at a non-existent creator.
+
+### Decision
+Before deleting the user row, for every surviving group the user created, reassign `created_by` to the longest-standing remaining member (ADR-0042). Groups that are being deleted anyway (user was sole member) are skipped.
+
+### Alternatives Considered
+- **Make `created_by` nullable and null it on creator deletion**: loses the "who made this group" record and requires a schema migration. `created_by` is currently informational only (admin rights live in `group_members.role`), so nulling would be harmless, but reassigning to a real member keeps the column meaningful. Rejected for now.
+- **`ON DELETE SET NULL`**: same nullability requirement, plus pushes the decision into the schema. Rejected.
+
+### Consequences
+- `created_by` always references a live member of a surviving group.
+- The reassigned creator gains no special power (rights are role-based), so this is a bookkeeping fix, not an authorization change.
+- **Revisit when**: we decide `created_by` should be nullable, or attach real semantics to it — either would change this handling.
+
+---
+
+## ADR-0042: Longest-standing member inherits admin / ownership on deletion
+
+Status: Accepted (revisit)
+Date: 2026-07-09
+
+### Context
+When the sole admin of a group deletes their account and other members remain, the group needs a new admin (design §Property 28f: "the longest-standing member SHALL be promoted"). Ownership reassignment (ADR-0041) needs the same choice of heir.
+
+### Decision
+The heir is the member with the earliest `joined_at` among the remaining members (`others.minByOrNull { it.joinedAt }`). Promotion only happens when the leaving user is an admin **and** no other admin already exists; if any other admin remains, no promotion is needed. Ties on `joined_at` are broken arbitrarily by `minByOrNull`.
+
+### Alternatives Considered
+- **Promote a random member**: simpler but non-deterministic and not what the spec says. Rejected.
+- **Promote all remaining members to admin**: over-grants privileges. Rejected.
+- **Deterministic tie-break (e.g. lowest UUID)**: `joined_at` collisions are near-impossible at real timestamps; not worth the extra code for MVP. Revisit if tests need determinism on identical timestamps.
+
+### Consequences
+- A group is never left admin-less after its sole admin deletes their account.
+- If multiple admins exist, deleting one leaves the others in place with no reshuffle.
+- **Revisit when**: we add an explicit tie-break rule, or let users choose their successor before deleting.
