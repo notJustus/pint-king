@@ -1,5 +1,6 @@
 package com.pintking.api.pint
 
+import com.pintking.api.group.GroupMemberRepository
 import com.pintking.api.storage.S3CleanupDispatcher
 import com.pintking.api.storage.S3Service
 import com.pintking.api.user.UserEntity
@@ -35,6 +36,7 @@ class PintServiceOrderingTest : DescribeSpec({
 
         it("does not insert a DB row when the S3 upload fails") {
             val pintLogRepository = mock<PintLogRepository>()
+            val groupMemberRepository = mock<GroupMemberRepository>()
             val userRepository = mock<UserRepository>()
             val s3Service = mock<S3Service>()
             val dispatcher = mock<S3CleanupDispatcher>()
@@ -42,7 +44,7 @@ class PintServiceOrderingTest : DescribeSpec({
             whenever(userRepository.findById(userId)).thenReturn(Optional.of(activeUser()))
             whenever(s3Service.uploadPhoto(any(), any(), any())).thenThrow(RuntimeException("S3 down"))
 
-            val service = PintService(pintLogRepository, userRepository, s3Service, dispatcher)
+            val service = PintService(pintLogRepository, groupMemberRepository, userRepository, s3Service, dispatcher)
 
             shouldThrow<RuntimeException> {
                 service.createPint(userId, photo(), CreatePintMetadata())
@@ -56,6 +58,7 @@ class PintServiceOrderingTest : DescribeSpec({
         it("enqueues the orphaned object for cleanup when the DB insert fails after upload") {
             val photoKey = "pints/$userId/$groupId/${UUID.randomUUID()}.jpg"
             val pintLogRepository = mock<PintLogRepository>()
+            val groupMemberRepository = mock<GroupMemberRepository>()
             val userRepository = mock<UserRepository>()
             val s3Service = mock<S3Service>()
             val dispatcher = mock<S3CleanupDispatcher>()
@@ -64,7 +67,7 @@ class PintServiceOrderingTest : DescribeSpec({
             whenever(s3Service.uploadPhoto(eq(userId), eq(groupId), any())).thenReturn(photoKey)
             whenever(pintLogRepository.saveAndFlush(any())).thenThrow(RuntimeException("DB down"))
 
-            val service = PintService(pintLogRepository, userRepository, s3Service, dispatcher)
+            val service = PintService(pintLogRepository, groupMemberRepository, userRepository, s3Service, dispatcher)
 
             shouldThrow<RuntimeException> {
                 service.createPint(userId, photo(), CreatePintMetadata())

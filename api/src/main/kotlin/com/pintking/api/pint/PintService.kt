@@ -2,10 +2,13 @@ package com.pintking.api.pint
 
 import com.pintking.api.common.BadRequestException
 import com.pintking.api.common.FieldError
+import com.pintking.api.common.ForbiddenException
 import com.pintking.api.common.ImageValidation
 import com.pintking.api.common.NotFoundException
+import com.pintking.api.common.PageResponse
 import com.pintking.api.common.UnprocessableException
 import com.pintking.api.common.ValidationException
+import com.pintking.api.group.GroupMemberRepository
 import com.pintking.api.storage.S3CleanupDispatcher
 import com.pintking.api.storage.S3Service
 import com.pintking.api.user.UserRepository
@@ -13,14 +16,20 @@ import org.locationtech.jts.geom.Coordinate
 import org.locationtech.jts.geom.GeometryFactory
 import org.locationtech.jts.geom.Point
 import org.locationtech.jts.geom.PrecisionModel
+import org.springframework.data.domain.PageRequest
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.multipart.MultipartFile
+import java.time.Instant
+import java.time.ZoneOffset
+import java.time.temporal.TemporalAdjusters
+import java.time.DayOfWeek
 import java.util.UUID
 
 @Service
 class PintService(
     private val pintLogRepository: PintLogRepository,
+    private val groupMemberRepository: GroupMemberRepository,
     private val userRepository: UserRepository,
     private val s3Service: S3Service,
     private val s3CleanupDispatcher: S3CleanupDispatcher
@@ -30,6 +39,10 @@ class PintService(
         private const val MAX_PHOTO_BYTES = 10 * 1024 * 1024
         private const val MAX_NOTE_LENGTH = 280
         val ALLOWED_DRINK_TYPES = setOf("beer", "lager", "ale", "stout", "cider")
+
+        private const val DEFAULT_PAGE_SIZE = 20
+        private const val MAX_PAGE_SIZE = 100
+        val ALLOWED_PERIODS = setOf("all_time", "this_week", "this_month")
     }
 
     // 4326 = WGS84 lon/lat, matching the pint_logs.location column's SRID.
@@ -74,6 +87,82 @@ class PintService(
         }
 
         return pint.toResponse()
+    }
+
+    /**
+     * GET /pints — newest-first page of a group's pints, optionally bounded to the
+     * current ISO week or calendar month (Requirements 5.3/5.4, Property 21).
+     */
+    @Transactional(readOnly = true)
+    fun listPints(userId: UUID, groupId: UUID, period: String?, page: Int?, size: Int?): PageResponse<PintFeedItem> {
+        // Requirement 26 / same stance as getGroup: membership is checked before
+        // anything is read, so a non-member and a non-existent group both get 403.
+        groupMemberRepository.findByUserIdAndGroupId(userId, groupId)
+            ?: throw ForbiddenException("You are not a member of this group")
+
+        val resolvedPeriod = period ?: "all_time"
+        if (resolvedPeriod !in ALLOWED_PERIODS) {
+            throw ValidationException(
+                listOf(FieldError("period", "Period must be one of ${ALLOWED_PERIODS.joinToString(", ")}"))
+            )
+        }
+
+        // page defaults to 0 and is clamped non-negative; size defaults to 20 and is
+        // capped at 100 so a client can't request an unbounded page.
+        val pageNumber = (page ?: 0).coerceAtLeast(0)
+        val pageSize = (size ?: DEFAULT_PAGE_SIZE).coerceIn(1, MAX_PAGE_SIZE)
+        val pageable = PageRequest.of(pageNumber, pageSize)
+
+        val from = periodStart(resolvedPeriod)
+        val pintPage = if (from == null) {
+            pintLogRepository.findByGroupIdOrderByLoggedAtDesc(groupId, pageable)
+        } else {
+            pintLogRepository.findByGroupIdAndLoggedAtGreaterThanEqualOrderByLoggedAtDesc(groupId, from, pageable)
+        }
+
+        // Batch-load the authors for this page in one query to avoid an N+1.
+        val authors = userRepository.findAllById(pintPage.content.map { it.userId })
+            .associateBy { it.id!! }
+
+        val items = pintPage.content.map { pint ->
+            val author = authors[pint.userId]
+            PintFeedItem(
+                id = pint.id!!,
+                userId = pint.userId,
+                displayName = author?.displayName,
+                avatarUrl = author?.avatarUrl?.let { s3Service.generatePresignedUrl(it) },
+                groupId = pint.groupId,
+                photoUrl = s3Service.generatePresignedUrl(pint.photoUrl),
+                note = pint.note,
+                drinkType = pint.drinkType,
+                latitude = pint.location?.y,
+                longitude = pint.location?.x,
+                loggedAt = pint.loggedAt
+            )
+        }
+
+        return PageResponse(
+            data = items,
+            page = pageNumber,
+            size = pageSize,
+            total = pintPage.totalElements
+        )
+    }
+
+    /**
+     * The inclusive lower bound for a period, or null for all_time (no bound).
+     * Week is the current ISO week (Monday 00:00 UTC); month is the 1st at 00:00 UTC.
+     */
+    private fun periodStart(period: String): Instant? {
+        val today = Instant.now().atZone(ZoneOffset.UTC).toLocalDate()
+        return when (period) {
+            "this_week" ->
+                today.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
+                    .atStartOfDay(ZoneOffset.UTC).toInstant()
+            "this_month" ->
+                today.withDayOfMonth(1).atStartOfDay(ZoneOffset.UTC).toInstant()
+            else -> null
+        }
     }
 
     private fun validatePhoto(photo: MultipartFile?): ByteArray {

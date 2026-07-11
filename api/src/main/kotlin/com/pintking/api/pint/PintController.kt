@@ -1,8 +1,10 @@
 package com.pintking.api.pint
 
+import com.pintking.api.common.PageResponse
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.security.core.annotation.AuthenticationPrincipal
+import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RequestParam
@@ -33,6 +35,16 @@ class PintController(
         )
         return ResponseEntity.status(HttpStatus.CREATED).body(pint)
     }
+
+    @GetMapping
+    fun listPints(
+        @AuthenticationPrincipal userId: UUID,
+        @RequestParam("group_id") groupId: UUID,
+        @RequestParam(value = "period", required = false) period: String?,
+        @RequestParam(value = "page", required = false) page: Int?,
+        @RequestParam(value = "size", required = false) size: Int?
+    ): PageResponse<PintFeedItem> =
+        pintService.listPints(userId, groupId, period, page, size)
 }
 
 data class CreatePintMetadata(
@@ -45,6 +57,21 @@ data class CreatePintMetadata(
 data class PintResponse(
     val id: UUID,
     val userId: UUID,
+    val groupId: UUID,
+    val photoUrl: String,
+    val note: String?,
+    val drinkType: String?,
+    val latitude: Double?,
+    val longitude: Double?,
+    val loggedAt: Instant
+)
+
+// A pint as it appears in a group feed: pint fields plus the author's identity.
+data class PintFeedItem(
+    val id: UUID,
+    val userId: UUID,
+    val displayName: String?,
+    val avatarUrl: String?,
     val groupId: UUID,
     val photoUrl: String,
     val note: String?,
