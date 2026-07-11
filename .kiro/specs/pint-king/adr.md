@@ -76,6 +76,8 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0040 | Account deletion: DB cascade in one transaction, S3 cleanup async after commit | Accepted (revisit) |
 | 0041 | Account deletion reassigns `groups.created_by` to satisfy the NOT NULL creator FK | Accepted (revisit) |
 | 0042 | Longest-standing member (`joined_at` ascending) inherits admin / ownership on deletion | Accepted (revisit) |
+| 0043 | Invite codes via mixed-case Base62, DB-uniqueness with bounded retry | Accepted (revisit) |
+| 0044 | Group creation limit counted from `groups.created_by` | Accepted (revisit) |
 
 ---
 
@@ -1015,3 +1017,49 @@ The heir is the member with the earliest `joined_at` among the remaining members
 - A group is never left admin-less after its sole admin deletes their account.
 - If multiple admins exist, deleting one leaves the others in place with no reshuffle.
 - **Revisit when**: we add an explicit tie-break rule, or let users choose their successor before deleting.
+
+---
+
+## ADR-0043: Invite codes via mixed-case Base62, DB-uniqueness with bounded retry
+
+Status: Accepted (revisit)
+Date: 2026-07-11
+
+### Context
+Group creation must produce a unique 8-character alphanumeric invite code (Requirement 3.3, Property 10). The schema declares `groups.invite_code` as `VARCHAR(8) UNIQUE`. We need a generation strategy that satisfies the format and guarantees uniqueness.
+
+### Decision
+Generate each code as 8 characters drawn uniformly from the 62-character Base62 alphabet (`A–Z`, `a–z`, `0–9`) using a single shared `SecureRandom`. After generating, check `groupRepository.existsByInviteCode(code)`; on collision, retry up to 10 times, then throw `IllegalStateException`. Case is significant — `ABCD1234` and `abcd1234` are distinct codes, matching the DB's case-sensitive unique index.
+
+### Alternatives Considered
+- **Uppercase-only (36 chars)**: friendlier to type/say aloud, but 36^8 ≈ 2.8e12 vs 62^8 ≈ 2.2e14 — a smaller space. Kept mixed-case for the larger keyspace; can revisit for UX. 
+- **Rely solely on the DB unique constraint + catch the violation**: works, but the retry-on-`exists` loop keeps the happy path clean and avoids surfacing a `DataIntegrityViolationException`. The DB constraint remains the ultimate backstop.
+- **UUID-derived / sequential codes**: sequential is guessable; UUID is longer than 8 chars. Rejected.
+
+### Consequences
+- Collision probability is negligible at MVP scale, so the loop almost always succeeds on the first attempt.
+- The bounded retry (10 attempts) means a pathologically saturated keyspace fails loudly rather than looping forever — though that is astronomically unlikely.
+- The `exists` check is a read before the insert; a concurrent creator could still race to the same code, but the DB `UNIQUE` constraint would then reject the second insert. Acceptable for MVP given the collision odds.
+- **Revisit when**: we want human-friendlier codes (uppercase-only, ambiguity-free alphabet excluding `0/O/1/l`), or codes become high-volume enough to warrant precomputation.
+
+---
+
+## ADR-0044: Group creation limit counted from `groups.created_by`
+
+Status: Accepted (revisit)
+Date: 2026-07-11
+
+### Context
+Requirement 3.2 caps a user at 99 *created* groups (422 on the 100th). We must decide what "created" counts: groups the user made, or groups they belong to.
+
+### Decision
+Enforce the limit with `groupRepository.countByCreatedBy(userId) >= 99`. The count is based on `groups.created_by`, so it counts groups the user originally created — independent of membership. A user can still *join* unlimited groups; only creation is capped.
+
+### Alternatives Considered
+- **Count `group_members` rows where role = admin**: conflates promotion-to-admin with creation, and admin count changes as membership churns. Rejected — the requirement says "created".
+- **Count all memberships**: would cap joining too, which the requirement does not ask for. Rejected.
+
+### Consequences
+- Account deletion reassigns `created_by` to an heir (ADR-0041), which means a surviving heir's created-count can rise when they inherit a group they didn't create. This is an accepted quirk: the cap is a coarse anti-abuse guard, not an exact accounting of authorship. 
+- The check is a cheap indexed `COUNT`; no need to load rows.
+- **Revisit when**: the `created_by` reassignment quirk matters, or we want the limit to track "groups currently owned" with a dedicated counter.
