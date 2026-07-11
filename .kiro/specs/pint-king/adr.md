@@ -85,6 +85,11 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0049 | `BadRequestException` for message-only 400s (sole-admin leave) | Accepted (revisit) |
 | 0050 | Promotion mutates role in place, idempotent, no demotion counterpart | Accepted (revisit) |
 | 0051 | Invite-code regeneration reuses the generator, invalidation is implicit | Accepted (revisit) |
+| 0052 | Image magic-byte validation extracted to a shared `ImageValidation` helper | Accepted (revisit) |
+| 0053 | Pint metadata as flat multipart form fields, not a JSON part | Accepted (revisit) |
+| 0054 | Pint group derived from the author's `active_group_id`, not the request | Accepted (revisit) |
+| 0055 | `saveAndFlush` to make the S3-first orphan-cleanup catch reachable | Accepted (revisit) |
+| 0056 | Latitude/longitude are all-or-nothing (400 if only one supplied) | Accepted (revisit) |
 
 ---
 
@@ -1236,3 +1241,115 @@ Reuse the existing private `generateUniqueInviteCode()` (retry-on-collision, bou
 - Auth-before-existence ordering: a non-admin (or non-member) regenerating gets 403, never leaking whether the group exists — same stance as ADR-0047/0050.
 - Because generation reuses the shared helper, the invite-code format guarantee (8 alphanumeric, collision-checked) holds identically for created and regenerated codes.
 - **Revisit when** invite links/QR codes are added (Requirement 3.10 also names those): they'll need to be derived from the current code so regeneration invalidates them too.
+
+---
+
+## ADR-0052: Image magic-byte validation extracted to a shared `ImageValidation` helper
+
+Status: Accepted (revisit)
+Date: 2026-07-11
+
+### Context
+Task 12 (avatar upload) validated image type by magic bytes (ADR-0037) with private `isJpeg`/`isPng` functions living inside `UserService`. Task 21 (pint photo upload) needs the identical check — same two formats, same byte signatures — differing only in the size limit (10 MB vs 5 MB) and the error message wording.
+
+### Decision
+Lift the magic-byte checks into a stateless `com.pintking.api.common.ImageValidation` object exposing `isJpeg`, `isPng`, and `isJpegOrPng`. Both `UserService` and `PintService` call it. The size limit and the human-readable message stay in each service (they differ per endpoint); only the format-detection logic is shared.
+
+### Alternatives Considered
+- **Duplicate the byte checks in `PintService`**: rejected — two copies of the same signature table drift over time (e.g. if we later accept a third format, or fix an edge case in one and forget the other).
+- **A full `FileValidator` that also enforces size**: rejected as premature — the size limit and message are genuinely per-endpoint, so folding them in would need parameters that add more surface than they remove. Kept the shared piece to exactly the invariant part (the byte signatures).
+
+### Consequences
+- One place defines "what is a valid image" for the whole API; adding a format (or the HEIC handling hinted at in ADR-0015) is a single edit.
+- `ImageValidation` is a plain object with no Spring wiring, trivially unit-testable and cheap to call.
+- **Revisit when** we add server-side HEIC→JPEG conversion (ADR-0015): detection and conversion may want to live together, changing this helper's shape.
+
+---
+
+## ADR-0053: Pint metadata as flat multipart form fields, not a JSON part
+
+Status: Accepted (revisit)
+Date: 2026-07-11
+
+### Context
+`POST /pints` is a multipart request: a mandatory `photo` file plus optional metadata (`note`, `drinkType`, `latitude`, `longitude`). The task text describes the metadata as "optional JSON metadata". Two encodings are possible: a single `application/json` part holding an object, or individual form fields alongside the file.
+
+### Decision
+Accept the metadata as separate multipart form fields bound with `@RequestParam` on the controller, mirroring the avatar endpoint's `@RequestParam("file")` style. The controller assembles them into a `CreatePintMetadata` data class before calling the service, so the service still takes one typed object.
+
+### Alternatives Considered
+- **A JSON `@RequestPart` metadata object**: closer to the task wording and tidier for large payloads, but mixing a JSON part with a file part in Spring MockMvc/`multipart` tests is fiddlier, and the client (iOS, `URLSession` multipart per ADR-0009) already builds form fields naturally. For four flat scalar fields, form params are simpler with no real downside.
+- **All metadata via query string, only the file in the body**: rejected — semantically the note/location are part of the created resource, not a query, and query strings are logged more freely (a note is user content).
+
+### Consequences
+- Controller signature is explicit about every accepted field; Spring handles type coercion (e.g. `latitude` → `Double`) and returns 400 on a malformed number without custom code.
+- The service layer is transport-agnostic (takes `CreatePintMetadata`), so a later switch to a JSON part only touches the controller.
+- **Revisit when** metadata grows structured/nested (e.g. multiple tags), at which point a JSON part earns its keep.
+
+---
+
+## ADR-0054: Pint group derived from the author's `active_group_id`, not the request
+
+Status: Accepted (revisit)
+Date: 2026-07-11
+
+### Context
+Every `pint_logs` row has a NOT NULL `group_id`. Requirement 4.6 says a pint is associated with "the User and the Active_Group". The request could carry a `groupId`, or the API could read the author's current `active_group_id`.
+
+### Decision
+The API ignores any client-supplied group and uses the authenticated user's `active_group_id` as the pint's group. If the user has no active group, creation is rejected with a 400 before any S3 upload.
+
+### Alternatives Considered
+- **Client sends `groupId`**: rejected — it duplicates state the server already owns (`users.active_group_id`, ADR-0003) and opens an authorization hole (a user could post to a group they aren't in, requiring an extra membership check). Deriving it server-side makes "you can only log to your active group" true by construction.
+- **Default the group but allow an override**: rejected as unused — the iOS flow (Requirement 4.2/4.3) logs to the active group only; there is no UI to pick a group at capture time.
+
+### Consequences
+- Property 17b ("associated with the user's current active_group_id") holds by construction — there is no other code path.
+- Requirement 4.2 (client disables logging with no active group) is backed by a server guard: a 400, so the invariant can't be violated even by a direct API call.
+- A member is always a member of their active group (ADR-0003/Property 16 keep `active_group_id` pointing at a joined group), so no separate membership check is needed here.
+- **Revisit when** we support logging to a non-active group (would require a request field + explicit membership check).
+
+---
+
+## ADR-0055: `saveAndFlush` to make the S3-first orphan-cleanup catch reachable
+
+Status: Accepted (revisit)
+Date: 2026-07-11
+
+### Context
+S3-first ordering (ADR-0001) requires: on a DB-insert failure *after* a successful S3 upload, enqueue the orphaned object for cleanup and return 500. The service wraps the insert in a try/catch to do this. But with UUID-generated ids (ADR-0011 uses DB-side `gen_random_uuid()`; the entity uses `GenerationType.UUID`), Hibernate has no need to hit the DB at `save()` time — it can defer the INSERT to transaction commit, which happens *after* the method returns and *outside* the try/catch. A constraint or connectivity failure would then surface at commit, bypassing the cleanup entirely.
+
+### Decision
+Use `pintLogRepository.saveAndFlush(...)` rather than `save(...)` for the pint insert. The explicit flush forces the INSERT to execute synchronously inside the try block, so a DB failure is caught there and the orphaned S3 key is dispatched to `S3CleanupDispatcher`.
+
+### Alternatives Considered
+- **Plain `save()`**: rejected — the catch block becomes dead code for the exact failure mode it exists to handle (deferred INSERT throws at commit, past the catch).
+- **A `TransactionSynchronization.afterCompletion(STATUS_ROLLBACK)` hook to fire cleanup**: works without a flush and even catches commit-time failures, but is heavier and less obvious than forcing the write where the ordering contract already lives. Kept in reserve if we later need to catch failures that only manifest at commit (e.g. deferred constraints).
+
+### Consequences
+- The orphan-cleanup path is actually exercised by `PintServiceOrderingTest` (mocked `saveAndFlush` throwing), not just present-but-unreachable.
+- One extra flush per pint creation — negligible, and the row is being written immediately anyway.
+- The insert still participates in the surrounding `@Transactional`, so a later failure in the same method would still roll the row back (not a concern today — nothing runs after the insert).
+- **Revisit when** additional writes are added after the insert within the same transaction, or if we move to app-generated UUIDs (which would make `save()` flush eagerly regardless).
+
+---
+
+## ADR-0056: Latitude/longitude are all-or-nothing (400 if only one supplied)
+
+Status: Accepted (revisit)
+Date: 2026-07-11
+
+### Context
+Location on a pint is optional (Requirement 4.13/4.15 — omitted silently if GPS isn't available). It is stored as a single PostGIS `GEOMETRY(Point, 4326)` built from a (longitude, latitude) pair. A client could, by bug, send only one of the two coordinates.
+
+### Decision
+Validate that `latitude` and `longitude` are either both present or both absent. Exactly one present is a 400 with a `location` field error. Both absent → the pint is created with a null location; both present → a `Point` is constructed and stored.
+
+### Alternatives Considered
+- **Silently drop a lone coordinate** (treat as no location): rejected — it hides a client bug and produces a pint that silently lost its location, which is harder to diagnose than a clear 400.
+- **Accept a lone coordinate and store a partial/zeroed point**: rejected — a point needs both axes; a zeroed one would be a real location (off the coast of Africa at 0,0), i.e. silent data corruption.
+
+### Consequences
+- A malformed location request fails loudly and early (before S3 upload), consistent with the other metadata validations.
+- The JTS `Coordinate(lng, lat)` axis order (x=longitude, y=latitude) is applied in one place; the response echoes `latitude = point.y`, `longitude = point.x`.
+- **Revisit when** we accept location in a different shape (e.g. a GeoJSON part), which would move this pairing check.
