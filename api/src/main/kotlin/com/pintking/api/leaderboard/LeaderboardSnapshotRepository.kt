@@ -9,4 +9,7 @@ interface LeaderboardSnapshotRepository : JpaRepository<LeaderboardSnapshotEntit
         periodType: String,
         periodKey: String
     ): List<LeaderboardSnapshotEntity>
+
+    fun deleteByUserId(userId: UUID)
+    fun deleteByGroupId(groupId: UUID)
 }

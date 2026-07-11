@@ -5,4 +5,6 @@ import java.util.*
 
 interface GroupBlockRepository : JpaRepository<GroupBlockEntity, UUID> {
     fun findByGroupIdAndUserId(groupId: UUID, userId: UUID): GroupBlockEntity?
+    fun deleteByUserId(userId: UUID)
+    fun deleteByGroupId(groupId: UUID)
 }

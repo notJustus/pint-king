@@ -18,7 +18,7 @@ class GroupEntity(
     var inviteCode: String,
 
     @Column(name = "created_by", nullable = false)
-    val createdBy: UUID,
+    var createdBy: UUID,
 
     @Column(name = "created_at", nullable = false, updatable = false)
     val createdAt: Instant = Instant.now(),

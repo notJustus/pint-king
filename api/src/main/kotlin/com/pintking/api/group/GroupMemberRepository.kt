@@ -7,4 +7,6 @@ interface GroupMemberRepository : JpaRepository<GroupMemberEntity, UUID> {
     fun findByUserIdAndGroupId(userId: UUID, groupId: UUID): GroupMemberEntity?
     fun findByUserId(userId: UUID): List<GroupMemberEntity>
     fun findByGroupId(groupId: UUID): List<GroupMemberEntity>
+    fun deleteByUserId(userId: UUID)
+    fun deleteByGroupId(groupId: UUID)
 }

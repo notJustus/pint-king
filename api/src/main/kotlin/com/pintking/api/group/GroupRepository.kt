@@ -5,4 +5,5 @@ import java.util.*
 
 interface GroupRepository : JpaRepository<GroupEntity, UUID> {
     fun findByInviteCode(inviteCode: String): GroupEntity?
+    fun findByCreatedBy(createdBy: UUID): List<GroupEntity>
 }

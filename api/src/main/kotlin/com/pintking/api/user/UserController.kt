@@ -2,6 +2,7 @@ package com.pintking.api.user
 
 import org.springframework.http.ResponseEntity
 import org.springframework.security.core.annotation.AuthenticationPrincipal
+import org.springframework.web.bind.annotation.DeleteMapping
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PatchMapping
 import org.springframework.web.bind.annotation.PostMapping
@@ -14,7 +15,10 @@ import java.util.UUID
 
 @RestController
 @RequestMapping("/users")
-class UserController(private val userService: UserService) {
+class UserController(
+    private val userService: UserService,
+    private val accountService: AccountService
+) {
 
     @GetMapping("/me")
     fun getMe(@AuthenticationPrincipal userId: UUID): ResponseEntity<UserProfileResponse> {
@@ -35,6 +39,12 @@ class UserController(private val userService: UserService) {
         @RequestParam("file") file: MultipartFile
     ): ResponseEntity<UserProfileResponse> {
         return ResponseEntity.ok(userService.updateAvatar(userId, file))
+    }
+
+    @DeleteMapping("/me")
+    fun deleteMe(@AuthenticationPrincipal userId: UUID): ResponseEntity<Void> {
+        accountService.deleteAccount(userId)
+        return ResponseEntity.noContent().build()
     }
 }
 
