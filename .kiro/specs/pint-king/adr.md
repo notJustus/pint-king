@@ -79,6 +79,7 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0043 | Invite codes via mixed-case Base62, DB-uniqueness with bounded retry | Accepted (revisit) |
 | 0044 | Group creation limit counted from `groups.created_by` | Accepted (revisit) |
 | 0045 | Group join check order: not-found → already-member → blocked | Accepted (revisit) |
+| 0046 | Group detail hides non-members behind 403 (never 404) | Accepted (revisit) |
 
 ---
 
@@ -1090,3 +1091,25 @@ Check in this fixed order and short-circuit on the first match:
 - A blocked user probing an unknown code gets 404, not 403 — no information leak about which groups they are blocked from.
 - The membership and block lookups are single indexed reads (`findByUserIdAndGroupId`, `findByGroupIdAndUserId`); the whole method is one `@Transactional` unit.
 - **Revisit when**: removal semantics change such that a user could be both a member and blocked simultaneously.
+
+---
+
+## ADR-0046: Group detail hides non-members behind 403 (never 404)
+
+Status: Accepted (revisit)
+Date: 2026-07-11
+
+### Context
+`GET /groups/{id}` must reject non-members (Property 26 / Requirement 7.2). A request for a group the caller doesn't belong to and a request for a group that doesn't exist are two distinct failure modes; we must decide whether to distinguish them (404 vs 403) or collapse them.
+
+### Decision
+Check membership first (`findByUserIdAndGroupId`) and throw `ForbiddenException` (403) if there is no membership row — before ever loading the group. A non-existent group therefore also returns 403, because a random UUID has no membership row for the caller either. Only after membership is confirmed do we load the group and its members.
+
+### Alternatives Considered
+- **404 for missing group, 403 for non-member**: leaks group existence. An attacker enumerating UUIDs could distinguish "real group I'm not in" (403) from "no such group" (404), revealing which IDs are live. Rejected on the same information-hiding grounds as ADR-0045.
+- **Load group first, then check membership**: an extra DB read on the unauthorized path and easy to accidentally leak details (e.g. via an error message) before the auth check runs. Rejected — auth check goes first.
+
+### Consequences
+- A non-member and a bad UUID are indistinguishable to the client. This is intentional: the endpoint reveals nothing about groups you can't see.
+- The member list is assembled by resolving each `group_members` row to its `UserEntity` (N+1 reads) and pre-signing avatar URLs. Fine at MVP group sizes; **revisit when** groups grow large enough that a single join query or batch fetch is worth the complexity.
+- `memberCount` in the detail response is derived from the loaded member list (`members.size`) rather than a separate `COUNT`, keeping the count and the list consistent within one transaction. The list endpoint (`GET /groups`) still uses `countByGroupId` because it never loads the members.
