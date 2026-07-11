@@ -90,6 +90,9 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0054 | Pint group derived from the author's `active_group_id`, not the request | Accepted (revisit) |
 | 0055 | `saveAndFlush` to make the S3-first orphan-cleanup catch reachable | Accepted (revisit) |
 | 0056 | Latitude/longitude are all-or-nothing (400 if only one supplied) | Accepted (revisit) |
+| 0057 | Period filtering derives an inclusive UTC lower bound in-service | Accepted (revisit) |
+| 0058 | Feed pagination — 0-based page, default size 20, hard cap 100 | Accepted (revisit) |
+| 0059 | Feed authors batch-loaded via `findAllById` (no N+1) | Accepted (revisit) |
 
 ---
 
@@ -1353,3 +1356,68 @@ Validate that `latitude` and `longitude` are either both present or both absent.
 - A malformed location request fails loudly and early (before S3 upload), consistent with the other metadata validations.
 - The JTS `Coordinate(lng, lat)` axis order (x=longitude, y=latitude) is applied in one place; the response echoes `latitude = point.y`, `longitude = point.x`.
 - **Revisit when** we accept location in a different shape (e.g. a GeoJSON part), which would move this pairing check.
+
+---
+
+## ADR-0057: Period filtering derives an inclusive lower bound in-service (UTC), not a DB date function
+
+Status: Accepted (revisit)
+Date: 2026-07-11
+
+### Context
+`GET /pints?period=this_week|this_month` filters the feed by `logged_at`. The bound could be computed in SQL (`date_trunc('week', now())`) or in the service and passed as a parameter.
+
+### Decision
+Compute the inclusive lower bound in Kotlin: `this_week` = Monday 00:00 UTC of the current ISO week (`TemporalAdjusters.previousOrSame(MONDAY)`), `this_month` = the 1st at 00:00 UTC. `all_time` → no bound. The bound is passed to a derived Spring Data query (`findByGroupIdAndLoggedAtGreaterThanEqualOrderByLoggedAtDesc`). An unrecognised period is a 400 `period` field error; a missing period defaults to `all_time`.
+
+### Alternatives Considered
+- **`date_trunc` in a `@Query`**: rejected — pushes the timezone decision into SQL where it's less visible, and it's the same logic the leaderboard (Task 25) will need, so keeping it in Kotlin lets both share a helper later.
+- **Half-open upper bound too (`< next period`)**: unnecessary — pints can't be logged in the future, so a lower bound alone is exact.
+
+### Consequences
+- All period maths is UTC. The requirement text mentions the user's local timezone; MVP treats "current week/month" as UTC and revisits if per-user timezones are added.
+- **Revisit when** the leaderboard lands — the `periodStart` helper should be lifted to a shared location rather than duplicated.
+
+---
+
+## ADR-0058: Feed pagination — 0-based `page`, default size 20, hard cap 100
+
+Status: Accepted (revisit)
+Date: 2026-07-11
+
+### Context
+`GET /pints` is offset-paginated via Spring Data `Pageable`. The client controls `page` and `size`; both need defaults and bounds so a caller can't request an unbounded or negative page.
+
+### Decision
+`page` defaults to 0 and is clamped to `>= 0`; `size` defaults to 20 and is clamped to `1..100`. Out-of-range values are silently coerced, not rejected. The response uses the existing `PageResponse` envelope (`data`, `page`, `size`, `total`) with `total` taken from `Page.totalElements`.
+
+### Alternatives Considered
+- **400 on an out-of-range size**: rejected — coercion is friendlier for a paging control and matches the "be liberal in what you accept" stance already used for optional params.
+- **Cursor/keyset pagination**: rejected for MVP — offset paging is simpler and the feed is small; keyset can come later if deep pages become slow.
+
+### Consequences
+- The cap bounds the worst-case query and the number of pre-signed URLs generated per request.
+- `page`/`size` echoed back are the *coerced* values, so the client sees what was actually applied.
+- **Revisit when** feeds grow large enough that offset paging on high page numbers is slow.
+
+---
+
+## ADR-0059: Feed authors batch-loaded via `findAllById`, not per-pint lookups
+
+Status: Accepted (revisit)
+Date: 2026-07-11
+
+### Context
+Each feed item carries the author's `displayName` and pre-signed `avatarUrl`. Naively resolving the author inside the per-pint mapping would issue one `findById` per row (N+1).
+
+### Decision
+Collect the page's distinct `user_id`s and load them in a single `userRepository.findAllById(...)`, keyed into a map for O(1) lookup during mapping. An author missing from the map (e.g. a since-deleted user) yields null `displayName`/`avatarUrl` rather than failing the request.
+
+### Alternatives Considered
+- **A JPA `@ManyToOne` from `PintLogEntity` to `UserEntity`**: rejected — the entity is deliberately id-only (no relationship graph), and a join fetch would still need care to avoid N+1; the explicit batch load is simpler and keeps the entity flat.
+- **A projection/join query returning pint + author columns**: reasonable, deferred — the two-query approach is clear and the page is capped at 100, so it's cheap enough for MVP.
+
+### Consequences
+- Exactly two queries back the feed (the page + the authors), independent of page size.
+- Former/deleted authors degrade gracefully to null identity fields instead of 500-ing.
+- **Revisit when** the feed needs more author fields or the two-query pattern recurs enough to justify a projection.
