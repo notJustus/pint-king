@@ -94,6 +94,7 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0058 | Feed pagination — 0-based page, default size 20, hard cap 100 | Accepted (revisit) |
 | 0059 | Feed authors batch-loaded via `findAllById` (no N+1) | Accepted (revisit) |
 | 0060 | Pint update is a partial PATCH; absent fields untouched, blank note clears | Accepted (revisit) |
+| 0061 | Pint delete 24h window is inclusive, measured against wall-clock now | Accepted (revisit) |
 
 ---
 
@@ -1445,3 +1446,27 @@ Treat the PATCH as partial: apply a field only when it is present (non-null) in 
 - Clients edit one field without resending the other; there is no risk of a round-trip accidentally wiping the untouched field.
 - The validation logic (280-char note, enum drink type) is duplicated from create rather than shared — small enough to accept for now.
 - **Revisit when** a third updatable field appears or a caller genuinely needs to distinguish "leave note" from "clear note" without sending whitespace.
+
+---
+
+## ADR-0061: Pint delete 24h window is inclusive and measured against wall-clock now
+
+Status: Accepted (revisit)
+Date: 2026-07-11
+
+### Context
+`DELETE /pints/{id}` (Task 24) may only succeed within 24 hours of the pint's `logged_at` (Requirements 4.16–4.18, Property 19). Two things needed pinning down: the exact boundary semantics (is exactly-24h in or out?) and where the S3 photo delete fires relative to the DB delete. The design (`l3-api.md` "Pint Deletion: DB-First", ADR-0002) mandates DB-first: delete the row in the transaction, then dispatch the S3 delete after commit.
+
+### Decision
+The check is `Duration.between(loggedAt, Instant.now()) > 24h → 400`. This makes the window **inclusive** of the exact 24-hour mark (a pint exactly 24h old is still deletable; only strictly older is rejected) and measures elapsed time against the request's wall-clock `Instant.now()`, not any DB-side clock. The 24h duration lives as a private `DELETE_WINDOW` constant on `PintService`. The 404-then-403-then-400 ordering matches the rest of the pint endpoints: missing pint → 404, not-the-creator → 403, outside window → 400. The photo key is captured before `delete(pint)`, and the S3 delete is dispatched via a `TransactionSynchronization.afterCommit` hook (the same pattern as `AccountService`) so a rollback never orphan-deletes a live photo. An S3 failure is swallowed by `S3CleanupDispatcher` and left to the orphan-cleanup job — the row stays deleted regardless.
+
+### Alternatives Considered
+- **Exclusive boundary (`>=` rejects at exactly 24h)**: functionally indistinguishable in practice (nanosecond-exact hits are impossible), but `>` reads as "more than 24 hours" which matches Requirement 4.17's wording ("older than 24 hours").
+- **Dispatch S3 delete inline before/after the DB delete without an after-commit hook**: rejected — an inline pre-commit dispatch could delete the photo then have the transaction roll back, orphaning a still-referenced row's expectation; the after-commit hook is the established DB-first pattern.
+- **Enforce the window in SQL (`DELETE ... WHERE logged_at > now() - interval '24h'`)**: rejected — we need to distinguish 404 (no such pint), 403 (not creator), and 400 (too old) with distinct responses, which a single conditional DELETE can't express cleanly.
+
+### Consequences
+- The window is evaluated on the API server's clock; clock skew between app servers is the only thing that could shift the boundary, and it's sub-second.
+- Reusing the `afterCommit` dispatch pattern keeps deletion consistent with account deletion — a rollback can never trigger a photo delete.
+- A failed S3 delete leaves an orphan that the cleanup job reclaims; the user's delete still appears (correctly) successful.
+- **Revisit when** deletion needs an audit trail (soft-delete) or the window becomes configurable per group.
