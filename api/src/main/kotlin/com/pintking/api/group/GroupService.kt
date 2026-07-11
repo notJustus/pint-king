@@ -166,6 +166,27 @@ class GroupService(
     }
 
     /**
+     * POST /groups/{id}/members/{targetUserId}/promote — an admin raises another
+     * member to admin. Idempotent: promoting an existing admin is a no-op success.
+     */
+    @Transactional
+    fun promoteMember(callerId: UUID, groupId: UUID, targetUserId: UUID) {
+        // Requirement 14.3: only an admin may promote another member. As elsewhere,
+        // a non-member caller (or non-existent group) is a 403, not a 404.
+        val callerMembership = groupMemberRepository.findByUserIdAndGroupId(callerId, groupId)
+        if (callerMembership == null || callerMembership.role != GroupMemberEntity.ROLE_ADMIN) {
+            throw ForbiddenException("Only a group admin can promote a member")
+        }
+
+        // The target must actually be in the group. Checked after auth, so an admin
+        // promoting a stranger gets a 404 while a non-admin gets a 403 regardless.
+        val targetMembership = groupMemberRepository.findByUserIdAndGroupId(targetUserId, groupId)
+            ?: throw NotFoundException("User is not a member of this group")
+
+        targetMembership.role = GroupMemberEntity.ROLE_ADMIN
+    }
+
+    /**
      * DELETE /groups/{id}/members/{targetUserId} — one endpoint, two flows keyed on
      * whether the target is the caller themselves (leave) or someone else (admin removal).
      */

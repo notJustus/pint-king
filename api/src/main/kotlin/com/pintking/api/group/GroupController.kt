@@ -61,6 +61,16 @@ class GroupController(
         return ResponseEntity.ok(groupService.updateGroup(userId, id, request))
     }
 
+    @PostMapping("/{id}/members/{userId}/promote")
+    fun promoteMember(
+        @AuthenticationPrincipal callerId: UUID,
+        @PathVariable id: UUID,
+        @PathVariable userId: UUID
+    ): ResponseEntity<Void> {
+        groupService.promoteMember(callerId, id, userId)
+        return ResponseEntity.noContent().build()
+    }
+
     @DeleteMapping("/{id}/members/{userId}")
     fun removeMember(
         @AuthenticationPrincipal callerId: UUID,
