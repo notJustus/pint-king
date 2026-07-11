@@ -80,6 +80,7 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0044 | Group creation limit counted from `groups.created_by` | Accepted (revisit) |
 | 0045 | Group join check order: not-found → already-member → blocked | Accepted (revisit) |
 | 0046 | Group detail hides non-members behind 403 (never 404) | Accepted (revisit) |
+| 0047 | Group rename reuses the 403-before-404 auth pattern, admin-only | Accepted (revisit) |
 
 ---
 
@@ -1113,3 +1114,31 @@ Check membership first (`findByUserIdAndGroupId`) and throw `ForbiddenException`
 - A non-member and a bad UUID are indistinguishable to the client. This is intentional: the endpoint reveals nothing about groups you can't see.
 - The member list is assembled by resolving each `group_members` row to its `UserEntity` (N+1 reads) and pre-signing avatar URLs. Fine at MVP group sizes; **revisit when** groups grow large enough that a single join query or batch fetch is worth the complexity.
 - `memberCount` in the detail response is derived from the loaded member list (`members.size`) rather than a separate `COUNT`, keeping the count and the list consistent within one transaction. The list endpoint (`GET /groups`) still uses `countByGroupId` because it never loads the members.
+
+---
+
+## ADR-0047: Group rename reuses the 403-before-404 auth pattern, admin-only
+
+Status: Accepted (revisit)
+Date: 2026-07-11
+
+### Context
+`PATCH /groups/{id}` renames a group and is an admin-only action (Requirement 10.13, Property 26 / Requirement 14.3). Three distinct failure modes overlap: the group may not exist, the caller may not be a member, or the caller may be a non-admin member. We must decide the order of the validation and authorization checks and which HTTP status each produces.
+
+### Decision
+Check in this fixed order:
+1. **Validate the name** (trimmed length 1–50) → 400 with a field-level error. This runs first so a malformed request is rejected identically regardless of who sends it.
+2. **Resolve membership + role** (`findByUserIdAndGroupId`) → 403 if there is no membership row *or* the role is not `admin`. Both a non-member and a non-admin member get the same 403.
+3. **Load the group** and apply the rename; bump `updated_at` explicitly.
+
+A non-existent group also yields 403, because a random UUID has no membership row for the caller — the same information-hiding stance as ADR-0046.
+
+### Alternatives Considered
+- **Auth before validation**: would let an admin's malformed name and a non-admin's malformed name diverge (403 vs 400), leaking role information through validation behaviour. Putting validation first keeps a bad body a 400 for everyone. Rejected.
+- **Distinguish non-member (403) from non-existent group (404)**: leaks group existence to UUID enumeration, exactly as rejected in ADR-0046. Rejected for consistency.
+- **Distinguish non-admin member (403) from non-member (403 or 404)**: no benefit — both are "you can't do this" and collapsing them is simpler. Kept collapsed.
+
+### Consequences
+- Validation-before-auth means an unauthenticated-but-malformed body is still gated by the JWT filter (401) before reaching the controller; within the controller, a member/non-member/admin distinction never affects the 400 path.
+- `updated_at` is set manually (`group.updatedAt = Instant.now()`) rather than via a JPA lifecycle callback, matching how `UserService` handles its own `updated_at`. **Revisit when** we adopt JPA auditing (`@PreUpdate` / `@LastModifiedDate`) project-wide.
+- The response is the same `GroupResponse` shape as create/join (id, name, inviteCode, role, memberCount), so the client reuses one decoder.
