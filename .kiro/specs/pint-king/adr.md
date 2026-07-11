@@ -78,6 +78,7 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0042 | Longest-standing member (`joined_at` ascending) inherits admin / ownership on deletion | Accepted (revisit) |
 | 0043 | Invite codes via mixed-case Base62, DB-uniqueness with bounded retry | Accepted (revisit) |
 | 0044 | Group creation limit counted from `groups.created_by` | Accepted (revisit) |
+| 0045 | Group join check order: not-found → already-member → blocked | Accepted (revisit) |
 
 ---
 
@@ -1063,3 +1064,29 @@ Enforce the limit with `groupRepository.countByCreatedBy(userId) >= 99`. The cou
 - Account deletion reassigns `created_by` to an heir (ADR-0041), which means a surviving heir's created-count can rise when they inherit a group they didn't create. This is an accepted quirk: the cap is a coarse anti-abuse guard, not an exact accounting of authorship. 
 - The check is a cheap indexed `COUNT`; no need to load rows.
 - **Revisit when**: the `created_by` reassignment quirk matters, or we want the limit to track "groups currently owned" with a dedicated counter.
+
+---
+
+## ADR-0045: Group join check order: not-found → already-member → blocked
+
+Status: Accepted (revisit)
+Date: 2026-07-11
+
+### Context
+`POST /groups/join` has four outcomes (Property 11 / Requirements 3.5, 3.7–3.9): 404 unknown code, 409 already a member, 403 blocked, or success. When more than one condition could apply to the same request, the order in which we check them determines which status the client sees.
+
+### Decision
+Check in this fixed order and short-circuit on the first match:
+1. **Resolve the invite code** → 404 if no group matches.
+2. **Already a member?** → 409.
+3. **Blocked (`group_blocks` row)?** → 403 with "You have been removed from this group".
+4. Otherwise → insert `group_members` with role `member`, auto-set active group if none.
+
+### Alternatives Considered
+- **Blocked before already-member**: a removed user cannot also be a current member (removal deletes the membership and inserts the block), so the two are mutually exclusive in practice; order between them is only theoretical. We still fix an order for determinism and put the membership check first because it is the cheaper, more common case.
+- **404 last (validate membership first)**: leaks nothing useful and would require a group context we don't have until the code resolves. Rejected — code resolution must come first.
+
+### Consequences
+- A blocked user probing an unknown code gets 404, not 403 — no information leak about which groups they are blocked from.
+- The membership and block lookups are single indexed reads (`findByUserIdAndGroupId`, `findByGroupIdAndUserId`); the whole method is one `@Transactional` unit.
+- **Revisit when**: removal semantics change such that a user could be both a member and blocked simultaneously.
