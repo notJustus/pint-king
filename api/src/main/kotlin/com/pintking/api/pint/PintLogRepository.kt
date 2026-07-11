@@ -3,8 +3,16 @@ package com.pintking.api.pint
 import org.springframework.data.domain.Page
 import org.springframework.data.domain.Pageable
 import org.springframework.data.jpa.repository.JpaRepository
+import org.springframework.data.jpa.repository.Query
+import org.springframework.data.repository.query.Param
 import java.time.Instant
 import java.util.*
+
+/** A single row of the "pints per user" aggregation used by the leaderboard. */
+interface UserPintCount {
+    val userId: UUID
+    val count: Long
+}
 
 interface PintLogRepository : JpaRepository<PintLogEntity, UUID> {
     fun findByGroupIdOrderByLoggedAtDesc(groupId: UUID): List<PintLogEntity>
@@ -20,4 +28,30 @@ interface PintLogRepository : JpaRepository<PintLogEntity, UUID> {
         from: Instant,
         pageable: Pageable
     ): Page<PintLogEntity>
+
+    // Leaderboard (Task 25): pints per user for a group, grouped in the DB so a group with
+    // thousands of pints returns one row per user, not the full log. `from` is the inclusive
+    // period lower bound; null (via the all_time overload below) counts everything.
+    @Query(
+        """
+        SELECT p.userId AS userId, COUNT(p) AS count
+        FROM PintLogEntity p
+        WHERE p.groupId = :groupId AND p.loggedAt >= :from
+        GROUP BY p.userId
+        """
+    )
+    fun countByUserSince(
+        @Param("groupId") groupId: UUID,
+        @Param("from") from: Instant
+    ): List<UserPintCount>
+
+    @Query(
+        """
+        SELECT p.userId AS userId, COUNT(p) AS count
+        FROM PintLogEntity p
+        WHERE p.groupId = :groupId
+        GROUP BY p.userId
+        """
+    )
+    fun countByUser(@Param("groupId") groupId: UUID): List<UserPintCount>
 }

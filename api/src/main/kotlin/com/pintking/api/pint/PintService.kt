@@ -6,6 +6,7 @@ import com.pintking.api.common.ForbiddenException
 import com.pintking.api.common.ImageValidation
 import com.pintking.api.common.NotFoundException
 import com.pintking.api.common.PageResponse
+import com.pintking.api.common.Periods
 import com.pintking.api.common.UnprocessableException
 import com.pintking.api.common.ValidationException
 import com.pintking.api.group.GroupMemberRepository
@@ -24,9 +25,6 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.springframework.web.multipart.MultipartFile
 import java.time.Duration
 import java.time.Instant
-import java.time.ZoneOffset
-import java.time.temporal.TemporalAdjusters
-import java.time.DayOfWeek
 import java.util.UUID
 
 @Service
@@ -47,7 +45,6 @@ class PintService(
 
         private const val DEFAULT_PAGE_SIZE = 20
         private const val MAX_PAGE_SIZE = 100
-        val ALLOWED_PERIODS = setOf("all_time", "this_week", "this_month")
     }
 
     // 4326 = WGS84 lon/lat, matching the pint_logs.location column's SRID.
@@ -105,10 +102,10 @@ class PintService(
         groupMemberRepository.findByUserIdAndGroupId(userId, groupId)
             ?: throw ForbiddenException("You are not a member of this group")
 
-        val resolvedPeriod = period ?: "all_time"
-        if (resolvedPeriod !in ALLOWED_PERIODS) {
+        val resolvedPeriod = period ?: Periods.ALL_TIME
+        if (resolvedPeriod !in Periods.ALLOWED) {
             throw ValidationException(
-                listOf(FieldError("period", "Period must be one of ${ALLOWED_PERIODS.joinToString(", ")}"))
+                listOf(FieldError("period", "Period must be one of ${Periods.ALLOWED.joinToString(", ")}"))
             )
         }
 
@@ -118,7 +115,7 @@ class PintService(
         val pageSize = (size ?: DEFAULT_PAGE_SIZE).coerceIn(1, MAX_PAGE_SIZE)
         val pageable = PageRequest.of(pageNumber, pageSize)
 
-        val from = periodStart(resolvedPeriod)
+        val from = Periods.lowerBound(resolvedPeriod)
         val pintPage = if (from == null) {
             pintLogRepository.findByGroupIdOrderByLoggedAtDesc(groupId, pageable)
         } else {
@@ -235,22 +232,6 @@ class PintService(
                 }
             }
         )
-    }
-
-    /**
-     * The inclusive lower bound for a period, or null for all_time (no bound).
-     * Week is the current ISO week (Monday 00:00 UTC); month is the 1st at 00:00 UTC.
-     */
-    private fun periodStart(period: String): Instant? {
-        val today = Instant.now().atZone(ZoneOffset.UTC).toLocalDate()
-        return when (period) {
-            "this_week" ->
-                today.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
-                    .atStartOfDay(ZoneOffset.UTC).toInstant()
-            "this_month" ->
-                today.withDayOfMonth(1).atStartOfDay(ZoneOffset.UTC).toInstant()
-            else -> null
-        }
     }
 
     private fun validatePhoto(photo: MultipartFile?): ByteArray {
