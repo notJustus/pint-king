@@ -54,4 +54,20 @@ interface PintLogRepository : JpaRepository<PintLogEntity, UUID> {
         """
     )
     fun countByUser(@Param("groupId") groupId: UUID): List<UserPintCount>
+
+    // Snapshot job (Task 26): a *completed* period is bounded at both ends — [from, until) —
+    // because we're freezing the past, not the still-open current period.
+    @Query(
+        """
+        SELECT p.userId AS userId, COUNT(p) AS count
+        FROM PintLogEntity p
+        WHERE p.groupId = :groupId AND p.loggedAt >= :from AND p.loggedAt < :until
+        GROUP BY p.userId
+        """
+    )
+    fun countByUserBetween(
+        @Param("groupId") groupId: UUID,
+        @Param("from") from: Instant,
+        @Param("until") until: Instant
+    ): List<UserPintCount>
 }

@@ -30,6 +30,44 @@ object Periods {
     data class SnapshotKey(val periodType: String, val periodKey: String)
 
     /**
+     * A completed (fully elapsed) period the snapshot job (Task 26) freezes: its snapshot
+     * coordinates plus the half-open instant range `[from, until)` used to count the pints
+     * that fell inside it. Unlike the live feed's [lowerBound] (which needs no upper bound
+     * because pints can't be logged in the future), a *past* period needs both ends.
+     */
+    data class CompletedPeriod(
+        val periodType: String,
+        val periodKey: String,
+        val from: Instant,
+        val until: Instant
+    )
+
+    /**
+     * The week that just ended: last ISO week, `[Monday 00:00 last week, Monday 00:00 this week)`.
+     * `until` is exactly the current week's [lowerBound], so the two helpers can never disagree
+     * on where the week boundary sits.
+     */
+    fun completedWeek(now: Instant = Instant.now()): CompletedPeriod {
+        val key = previousSnapshotKey(THIS_WEEK, now)!!
+        val until = lowerBound(THIS_WEEK, now)!!
+        val from = until.atZone(ZoneOffset.UTC).toLocalDate().minusWeeks(1)
+            .atStartOfDay(ZoneOffset.UTC).toInstant()
+        return CompletedPeriod(key.periodType, key.periodKey, from, until)
+    }
+
+    /**
+     * The month that just ended: last calendar month, `[1st 00:00 last month, 1st 00:00 this month)`.
+     * `until` is the current month's [lowerBound].
+     */
+    fun completedMonth(now: Instant = Instant.now()): CompletedPeriod {
+        val key = previousSnapshotKey(THIS_MONTH, now)!!
+        val until = lowerBound(THIS_MONTH, now)!!
+        val from = until.atZone(ZoneOffset.UTC).toLocalDate().minusMonths(1)
+            .atStartOfDay(ZoneOffset.UTC).toInstant()
+        return CompletedPeriod(key.periodType, key.periodKey, from, until)
+    }
+
+    /**
      * The inclusive lower bound for a period, or null for all_time (no bound).
      * Week is the current ISO week (Monday 00:00 UTC); month is the 1st at 00:00 UTC.
      * Pints can't be logged in the future, so a lower bound alone is exact — no upper bound needed.

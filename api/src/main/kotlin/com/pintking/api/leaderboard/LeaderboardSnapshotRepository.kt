@@ -10,6 +10,12 @@ interface LeaderboardSnapshotRepository : JpaRepository<LeaderboardSnapshotEntit
         periodKey: String
     ): List<LeaderboardSnapshotEntity>
 
+    fun existsByGroupIdAndPeriodTypeAndPeriodKey(
+        groupId: UUID,
+        periodType: String,
+        periodKey: String
+    ): Boolean
+
     fun deleteByUserId(userId: UUID)
     fun deleteByGroupId(groupId: UUID)
 }

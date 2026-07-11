@@ -93,31 +93,21 @@ class LeaderboardService(
         counts: Map<UUID, Long>,
         users: Map<UUID, UserEntity>,
         snapshotRanks: Map<UUID, Int>?
-    ): List<LeaderboardEntry> {
-        val sorted = memberIds.sortedByDescending { counts[it] ?: 0 }
-
-        var rank = 0
-        var previousCount: Long? = null
-        return sorted.map { id ->
-            val count = counts[id] ?: 0
-            if (count != previousCount) {
-                rank++
-                previousCount = count
-            }
-            val user = users[id]
+    ): List<LeaderboardEntry> =
+        DenseRanking.rank(memberIds, counts).map { ranked ->
+            val user = users[ranked.userId]
             // Property 22: delta = previous snapshot rank − current rank. Positive = climbed.
-            val delta = snapshotRanks?.get(id)?.let { it - rank }
+            val delta = snapshotRanks?.get(ranked.userId)?.let { it - ranked.rank }
             LeaderboardEntry(
-                userId = id,
+                userId = ranked.userId,
                 displayName = user?.displayName ?: "",
                 avatarUrl = user?.avatarUrl?.let { s3Service.generatePresignedUrl(it) },
-                pintCount = count,
-                rank = rank,
+                pintCount = ranked.count,
+                rank = ranked.rank,
                 delta = delta,
-                isCrown = rank == 1
+                isCrown = ranked.rank == 1
             )
         }
-    }
 
     /** Map of userId → rank from the previous period's snapshot, or null for all_time. */
     private fun previousSnapshotRanks(groupId: UUID, period: String): Map<UUID, Int>? {
