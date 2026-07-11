@@ -95,6 +95,9 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0059 | Feed authors batch-loaded via `findAllById` (no N+1) | Accepted (revisit) |
 | 0060 | Pint update is a partial PATCH; absent fields untouched, blank note clears | Accepted (revisit) |
 | 0061 | Pint delete 24h window is inclusive, measured against wall-clock now | Accepted (revisit) |
+| 0062 | Period logic lifted to a shared `Periods` helper | Accepted |
+| 0063 | Leaderboard dense ranking, zero-pint members, former-member split | Accepted (revisit) |
+| 0064 | Rank delta reads previous period's snapshot; null for all_time / first period | Accepted |
 
 ---
 
@@ -1470,3 +1473,72 @@ The check is `Duration.between(loggedAt, Instant.now()) > 24h → 400`. This mak
 - Reusing the `afterCommit` dispatch pattern keeps deletion consistent with account deletion — a rollback can never trigger a photo delete.
 - A failed S3 delete leaves an orphan that the cleanup job reclaims; the user's delete still appears (correctly) successful.
 - **Revisit when** deletion needs an audit trail (soft-delete) or the window becomes configurable per group.
+
+---
+
+## ADR-0062: Period logic lifted to a shared `Periods` helper
+
+Status: Accepted
+Date: 2026-07-11
+
+### Context
+ADR-0057 flagged that the `periodStart` helper on `PintService` should be lifted to a shared location "when the leaderboard lands". Task 25's leaderboard needs the same current-week / current-month lower bound to filter pints, plus a second piece of period maths the feed never needed: the `(period_type, period_key)` of the *previous* completed period, to look up the snapshot the rank delta is measured against (ADR-0005).
+
+### Decision
+Introduce `common/Periods.kt` — an `object` holding the period constants (`all_time`/`this_week`/`this_month`), the `ALLOWED` set, `lowerBound(period)` (the inclusive UTC start, previously `PintService.periodStart`), and `previousSnapshotKey(period)` (last week's `"YYYY-Www"` or last month's `"YYYY-MM"`). `PintService` now calls `Periods.lowerBound` / `Periods.ALLOWED` and its private `periodStart` is deleted. Both `lowerBound` and `previousSnapshotKey` take an optional `now` parameter defaulting to `Instant.now()` so tests can pin a clock without touching wall time.
+
+### Alternatives Considered
+- **Leave `periodStart` on `PintService` and have the leaderboard duplicate it**: rejected — exactly the duplication ADR-0057 said to avoid; the two would drift.
+- **A Spring `@Service` bean instead of an `object`**: rejected — the logic is pure and stateless (no injected collaborators), so a plain object is simpler and needs no wiring.
+- **ISO week key via manual date arithmetic**: rejected in favour of `java.time.temporal.IsoFields` (`WEEK_BASED_YEAR` + `WEEK_OF_WEEK_BASED_YEAR`), which handles the year-boundary edge cases (e.g. a week that spans Dec/Jan) correctly.
+
+### Consequences
+- One source of truth for "what does this_week mean"; the feed and leaderboard can never disagree.
+- The `period_key` format (`YYYY-Www`, `YYYY-MM`) is now pinned in one place and must match what the snapshot job (Task 26) writes — that job will consume the same helper.
+- Still UTC-only, inheriting ADR-0057's revisit condition for per-user timezones.
+
+---
+
+## ADR-0063: Leaderboard dense ranking, zero-pint members, and former-member split
+
+Status: Accepted (revisit)
+Date: 2026-07-11
+
+### Context
+`GET /groups/{id}/leaderboard` (Task 25) ranks members by pint count for a period. Several semantics needed pinning: how ties rank, whether a current member with no pints appears, and how "former members" (users with pints in the group but no current membership — the retained-log case from ADR-0004) are handled (Requirement 5.12, Property 23).
+
+### Decision
+Counts are aggregated in the DB via `PintLogRepository.countByUser(groupId)` / `countByUserSince(groupId, from)`, returning one row per user who logged (a `UserPintCount` projection), so a group with thousands of pints returns at most one row per user. Ranking is computed in Kotlin: current members sorted by count descending, then a single pass assigns **dense** ranks (equal counts share a rank; the next distinct count is previous rank + 1, not + tie-count). A current member with **zero** pints still appears, ranked last with count 0 (the count map simply has no entry for them → treated as 0). Former members are `counts.keys − memberIds`: they get their own `formerMembers` array (sorted by count desc, no rank) and are excluded from the ranked set so their pints never shift an active member's rank. Rank 1 — including every member of a top tie — carries `isCrown = true` (Requirement 5.5). The response shape is `{ period, entries, formerMembers }`.
+
+### Alternatives Considered
+- **Standard competition ranking (1, 1, 3)**: rejected — Requirement 5.6 explicitly specifies dense ranking (1, 1, 2).
+- **Rank in SQL with a window function (`DENSE_RANK() OVER (ORDER BY count DESC)`)**: viable, but the delta join against snapshots and the former-member split are cleaner in Kotlin, and the member set is small (a group's membership, not its whole log). Kept ranking in-service alongside the delta computation.
+- **Omit zero-pint members**: rejected — Requirement 5.1 ranks "all Group_Members", so a member who hasn't logged this period is rank-last, not absent.
+- **Fold former members into the main list flagged**: rejected — Requirement 5.12 wants a visually separate, unranked section; a separate array makes the contract explicit.
+
+### Consequences
+- Ranking and delta live in one readable pass; if the member set ever grows large, the ranking could move to a window function without changing the response contract.
+- The former-member split depends on the ADR-0004 invariant that removal deletes `group_members` but retains `pint_logs`.
+- **Revisit when** ranking cost matters at scale (push `DENSE_RANK` into SQL) or a member's zero-pint appearance is undesirable in some period views.
+
+---
+
+## ADR-0064: Rank delta reads the previous period's snapshot; null for all_time and first period
+
+Status: Accepted
+Date: 2026-07-11
+
+### Context
+For week/month views the leaderboard shows each member's rank movement vs. the previous period's final ranking (Requirements 5.7/5.8, Property 22). ADR-0005 established `leaderboard_snapshots` as the delta baseline. Task 25 consumes those snapshots even though the writer job (Task 26) doesn't exist yet.
+
+### Decision
+Delta = `previousSnapshotRank − currentRank` (positive = climbed). The service resolves the previous period via `Periods.previousSnapshotKey(period)`, loads that period's snapshot rows for the group, and builds a `userId → rank` map. For each ranked member: if a snapshot rank exists, delta is the difference; if not (member is new this period, or no snapshot was ever written), delta is `null`. For `all_time`, `previousSnapshotKey` returns null and every delta is `null` (Requirement 5.9) — a stray weekly snapshot cannot leak into an all_time response because the key is never computed.
+
+### Alternatives Considered
+- **Default a missing snapshot to rank = member count + 1 (treat newcomers as "last")**: rejected — Property 22 says a missing prior snapshot yields a null delta, not a fabricated movement.
+- **Compute the previous period's ranking on the fly from `pint_logs`**: rejected by ADR-0005 (expensive, and the snapshot is the stable baseline).
+
+### Consequences
+- Until Task 26 writes snapshots, every week/month delta is null — correct behaviour, just no movement shown yet.
+- The delta's correctness is entirely coupled to the snapshot job writing the same `period_key` format `Periods` produces; both now share that helper.
+- Members who leave and rejoin, or who had no rank last period, correctly show no delta rather than a misleading jump.
