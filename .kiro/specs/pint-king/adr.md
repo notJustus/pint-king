@@ -93,6 +93,7 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0057 | Period filtering derives an inclusive UTC lower bound in-service | Accepted (revisit) |
 | 0058 | Feed pagination — 0-based page, default size 20, hard cap 100 | Accepted (revisit) |
 | 0059 | Feed authors batch-loaded via `findAllById` (no N+1) | Accepted (revisit) |
+| 0060 | Pint update is a partial PATCH; absent fields untouched, blank note clears | Accepted (revisit) |
 
 ---
 
@@ -1421,3 +1422,26 @@ Collect the page's distinct `user_id`s and load them in a single `userRepository
 - Exactly two queries back the feed (the page + the authors), independent of page size.
 - Former/deleted authors degrade gracefully to null identity fields instead of 500-ing.
 - **Revisit when** the feed needs more author fields or the two-query pattern recurs enough to justify a projection.
+
+---
+
+## ADR-0060: Pint update is a partial PATCH; absent fields untouched, blank note clears
+
+Status: Accepted (revisit)
+Date: 2026-07-11
+
+### Context
+`PATCH /pints/{id}` (Task 23) edits an existing pint's `note` and/or `drink_type`. The request DTO has both fields nullable, and JSON omission deserialises to null — so a null value is ambiguous between "not supplied" and "explicitly clear this". We had to pick a semantics and stay consistent with the rest of the API.
+
+### Decision
+Treat the PATCH as partial: apply a field only when it is present (non-null) in the body, using `request.field?.let { ... }`. An absent field leaves the persisted value untouched. For `note`, a present-but-blank value (whitespace) is trimmed to null, clearing the note — the same trim-to-null rule used at creation. `drink_type` has no clear-via-blank path; a present value must be a valid enum member. Only the creator may update (403 otherwise), and a missing pint is 404 (checked before the ownership guard). Photo and location are immutable via this endpoint. The dirty entity is flushed by the surrounding `@Transactional`, so there is no explicit `save`.
+
+### Alternatives Considered
+- **Mirror `PATCH /users/me` exactly (no clear path)**: the user PATCH also uses `?.let`, but its fields are non-clearable. We extend the same pattern and additionally allow `note` clearing because an empty note is a legitimate end state a user may want.
+- **A distinct sentinel to distinguish "omit" from "set null"** (e.g. `JsonNullable`): rejected as over-engineered for two fields; blank-string-clears covers the only field that can meaningfully be cleared.
+- **Require the note field always present**: rejected — that makes drink-type-only edits awkward and breaks the partial-update contract clients expect from PATCH.
+
+### Consequences
+- Clients edit one field without resending the other; there is no risk of a round-trip accidentally wiping the untouched field.
+- The validation logic (280-char note, enum drink type) is duplicated from create rather than shared — small enough to accept for now.
+- **Revisit when** a third updatable field appears or a caller genuinely needs to distinguish "leave note" from "clear note" without sending whitespace.
