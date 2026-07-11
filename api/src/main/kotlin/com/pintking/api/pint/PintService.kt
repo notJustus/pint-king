@@ -19,7 +19,10 @@ import org.locationtech.jts.geom.PrecisionModel
 import org.springframework.data.domain.PageRequest
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
+import org.springframework.transaction.support.TransactionSynchronization
+import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.springframework.web.multipart.MultipartFile
+import java.time.Duration
 import java.time.Instant
 import java.time.ZoneOffset
 import java.time.temporal.TemporalAdjusters
@@ -39,6 +42,8 @@ class PintService(
         private const val MAX_PHOTO_BYTES = 10 * 1024 * 1024
         private const val MAX_NOTE_LENGTH = 280
         val ALLOWED_DRINK_TYPES = setOf("beer", "lager", "ale", "stout", "cider")
+
+        private val DELETE_WINDOW = Duration.ofHours(24)
 
         private const val DEFAULT_PAGE_SIZE = 20
         private const val MAX_PAGE_SIZE = 100
@@ -190,6 +195,46 @@ class PintService(
         request.drinkType?.let { pint.drinkType = it }
 
         return pint.toResponse()
+    }
+
+    /**
+     * DELETE /pints/{id} — the author removes one of their pints within 24h of logging it
+     * (Requirements 4.16–4.18, Property 19). DB-first (ADR-0002): the row is deleted inside
+     * the transaction and the S3 photo delete is dispatched only after the commit is durable,
+     * so a rollback can never orphan-delete a photo. An S3 failure leaves the object for the
+     * orphan-cleanup job rather than resurrecting the row.
+     */
+    @Transactional
+    fun deletePint(userId: UUID, pintId: UUID) {
+        val pint = pintLogRepository.findById(pintId).orElseThrow {
+            NotFoundException("Pint not found")
+        }
+
+        // Requirement 4.15/4.16 / Property 26: only the creator can delete their own pint.
+        if (pint.userId != userId) {
+            throw ForbiddenException("You can only delete your own pints")
+        }
+
+        // Property 19: deletion is allowed iff now is within 24h of logged_at.
+        if (Duration.between(pint.loggedAt, Instant.now()) > DELETE_WINDOW) {
+            throw BadRequestException("Cannot delete a pint more than 24 hours after it was logged")
+        }
+
+        val photoKey = pint.photoUrl
+        pintLogRepository.delete(pint)
+
+        dispatchS3CleanupAfterCommit(photoKey)
+    }
+
+    private fun dispatchS3CleanupAfterCommit(key: String) {
+        // Only fire once the DB delete is durable; a rollback must not orphan-delete the photo.
+        TransactionSynchronizationManager.registerSynchronization(
+            object : TransactionSynchronization {
+                override fun afterCommit() {
+                    s3CleanupDispatcher.deleteObjects(listOf(key))
+                }
+            }
+        )
     }
 
     /**
