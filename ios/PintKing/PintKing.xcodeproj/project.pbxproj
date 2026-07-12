@@ -32,6 +32,9 @@
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		3B2C4C473003EDC7006DA256 /* PintKing */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				3B2C4C7000000000006DA256 /* Exceptions for "PintKing" folder in "PintKing" target */,
+			);
 			path = PintKing;
 			sourceTree = "<group>";
 		};
@@ -46,6 +49,25 @@
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		3B2C4C7000000000006DA256 /* Exceptions for "PintKing" folder in "PintKing" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Core/Keychain/.gitkeep,
+				Core/Models/.gitkeep,
+				Core/Networking/.gitkeep,
+				Features/Auth/.gitkeep,
+				Features/Camera/.gitkeep,
+				Features/Groups/.gitkeep,
+				Features/Home/.gitkeep,
+				Features/Profile/.gitkeep,
+				Repositories/.gitkeep,
+				Utilities/.gitkeep,
+			);
+			target = 3B2C4C443003EDC7006DA256 /* PintKing */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		3B2C4C423003EDC7006DA256 /* Frameworks */ = {
