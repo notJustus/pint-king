@@ -105,6 +105,7 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0069 | Map scope defaults to `group`; former members flagged, never filtered | Accepted (revisit) |
 | 0070 | Orphan cleanup diffs bucket keys against DB references, guarded by a grace window | Accepted (revisit) |
 | 0071 | Property-based tests assert invariants against independent oracles, one spec per property | Accepted (revisit) |
+| 0072 | End-to-end tests drive real HTTP journeys, threading tokens between calls | Accepted (revisit) |
 
 ---
 
@@ -1714,3 +1715,34 @@ Iteration counts are set per property (100–500) rather than a blanket 100 — 
 - The near-boundary skip in the deletion-window property (Property 19) trades a hair of coverage at exactly 24h for freedom from clock-timing flakes; the exact boundary is still pinned by the example test in PintDeleteTest.
 - Properties without the **(PBT)** mark (1–5, 7–9, 12–15, 23, 25, 27) stay example-based in their existing endpoint specs — this task added no tests for them by design.
 - A failing property prints the falsifying seed, so any future regression reproduces deterministically.
+
+---
+
+## ADR-0072: End-to-end tests drive real HTTP journeys, threading tokens between calls
+
+Status: Accepted (revisit)
+Date: 2026-07-12
+
+### Context
+Every endpoint already has a per-endpoint integration test, but each of those seeds its state directly through the repositories (`userRepository.save(...)`, `jwtService.generateToken(...)`) and exercises one endpoint in isolation. Task 30 asks for *end-to-end flows* against real containerised infrastructure. The open question was what an E2E test should add that the per-endpoint tests don't — otherwise it's just duplication.
+
+### Decision
+**E2E specs drive complete client journeys purely over HTTP and thread the real outputs of one call into the next.** A single `EndToEndTest` (new `e2e/` package) signs in through `POST /auth/apple` for a genuine JWT + refresh token, then uses that JWT to create a group, reads the *returned* invite code to make a second user join, logs pints via multipart, and reads them back on the leaderboard/map — never reaching into a repository to fabricate an ID or token that a real client would have received from a prior response. Repositories and S3 are touched only to *assert* the promised side-effects landed, not to set state up.
+
+This makes the specs test **composition**: that the invite code minted by create-group is the one join accepts; that the JWT issued by sign-in authorizes pint creation; that a pint's response `photoUrl` is a pre-signed URL a client can actually `GET` (the auth test fetches it over plain HTTP and checks the bytes match the upload); that removing a member creates the block that later makes their rejoin 403.
+
+**Flow chaining over fresh seeding, where it makes a stronger assertion.** The group-join spec walks all four outcomes (200/404/409/403) as one sequence so the 403 is produced by a real prior removal rather than a hand-inserted block row. The leaderboard spec runs the real snapshot job over a backdated completed week, then flips the ranking this week via the live endpoint, asserting the delta the API computes against its own snapshot.
+
+**One concession to HTTP's limits:** `loggedAt` can't be backdated through the API, so the completed-week pints the snapshot job reads are inserted through the repository. Everything a client controls still goes over HTTP.
+
+### Alternatives Considered
+- **Seed via repositories like the per-endpoint tests**: rejected — that's what those tests already do; it would never catch a mismatch *between* endpoints (e.g. a response field named differently from the request field the next endpoint expects).
+- **A shared abstract base spec / shared containers across all integration tests**: deferred — the whole suite still follows the per-class companion-object container pattern. Consolidating is a suite-wide refactor, noted in ADR-0071's revisit trigger, not something to introduce for one new file.
+- **Assert the pre-signed URL only by string-matching its shape**: rejected — actually fetching it over HTTP and comparing bytes is the only check that proves the presigner's endpoint/region/path-style config produces a URL that resolves against LocalStack.
+- **Drive the snapshot rollover by manipulating the clock** instead of backdating rows: rejected — reseeding a completed period via `Periods.completedWeek()` is deterministic and needs no clock control.
+
+### Consequences
+- The `e2e/` package documents the intended client sequences in one place — useful as living documentation of how the iOS app is expected to string calls together.
+- Like the other container specs, it stands up its own Postgres + LocalStack, adding to total suite time; same revisit trigger as ADR-0071 (shared container or a CI-only tag if the suite gets slow).
+- Async S3 cleanup is verified with `eventually(10.seconds)` polling, mirroring the per-endpoint delete/account-deletion specs, since cleanup runs after commit on another thread.
+- The one repository-seeded step (backdated pints) is called out in a comment so it isn't mistaken for a gap in HTTP coverage.
