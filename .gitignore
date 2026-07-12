@@ -6,3 +6,7 @@
 
 # Knowledge Base
 /.knowledge
+
+# Xcode per-user state
+xcuserdata/
+*.xcuserstate
