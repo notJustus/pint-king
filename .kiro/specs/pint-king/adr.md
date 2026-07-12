@@ -106,6 +106,7 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0070 | Orphan cleanup diffs bucket keys against DB references, guarded by a grace window | Accepted (revisit) |
 | 0071 | Property-based tests assert invariants against independent oracles, one spec per property | Accepted (revisit) |
 | 0072 | End-to-end tests drive real HTTP journeys, threading tokens between calls | Accepted (revisit) |
+| 0073 | OpenAPI docs auto-generated from controllers, global bearer scheme, off in prod | Accepted (revisit) |
 
 ---
 
@@ -1746,3 +1747,34 @@ This makes the specs test **composition**: that the invite code minted by create
 - Like the other container specs, it stands up its own Postgres + LocalStack, adding to total suite time; same revisit trigger as ADR-0071 (shared container or a CI-only tag if the suite gets slow).
 - Async S3 cleanup is verified with `eventually(10.seconds)` polling, mirroring the per-endpoint delete/account-deletion specs, since cleanup runs after commit on another thread.
 - The one repository-seeded step (backdated pints) is called out in a comment so it isn't mistaken for a gap in HTTP coverage.
+
+## ADR-0073: OpenAPI docs auto-generated from controllers, global bearer scheme, off in prod
+
+Status: Accepted (revisit)
+Date: 2026-07-12
+
+### Context
+Task 31 asks for browsable API documentation. The controllers, their request params, and the response DTOs already fully describe the surface; the question was how much to hand-author versus let a generator infer, and how the docs endpoints interact with the JWT security we already have.
+
+### Decision
+**Use SpringDoc (`springdoc-openapi-starter-webmvc-ui`) to generate the spec by scanning the live controller beans; add only the metadata a generator can't infer.** That metadata is: an `OpenApiConfig` bean with the API title/version and a single `bearerAuth` HTTP-bearer/JWT security scheme, applied globally with `addSecurityItem` so every operation renders with an authorize lock; and `@Tag`/`@Operation` annotations grouping and summarising each endpoint. Request and response schemas come for free from the Kotlin data classes.
+
+**The two public endpoints opt out per-operation with `@SecurityRequirements` (empty)** — `/auth/apple` and `/auth/refresh` — so the doc reflects that they take no bearer token, matching the real `permitAll` rules.
+
+**`@AuthenticationPrincipal userId: UUID` params are hidden with `@Parameter(hidden = true)`.** They're populated by the JWT filter, not sent by the client, so surfacing them as query/path parameters in the docs would be misleading.
+
+**Docs are on by default (local/dev) and disabled in the `prod` profile.** A new minimal `application-prod.yml` sets `springdoc.api-docs.enabled=false` and `swagger-ui.enabled=false`; Task 32 will expand that file with the rest of the prod config.
+
+**Both the JWT filter and Spring Security must let the docs through.** The `JwtAuthenticationFilter` short-circuits every request without a bearer token via `shouldNotFilter`, so it now also skips the `/v3/api-docs` and `/swagger-ui` prefixes; `SecurityConfig` `permitAll`s the same paths (including the bare `/v3/api-docs`, which `/v3/api-docs/**` alone does not match). Both layers are needed — the filter runs first and would 401 before the authorization rules apply.
+
+### Alternatives Considered
+- **Hand-write an OpenAPI YAML file**: rejected — it would drift from the code the moment a controller changes; generation stays in sync by construction.
+- **Per-endpoint `@SecurityRequirement` on every authenticated operation** instead of one global requirement with opt-outs on the two public ones: rejected — far more annotations, and the default-secure posture is safer (a new endpoint is documented as requiring auth unless explicitly opted out).
+- **Leave docs enabled in prod**: rejected — the surface and DTO shapes are internal detail; no reason to expose them publicly. Cheap to flip back on per-environment if wanted.
+- **Only `permitAll` in SecurityConfig, without touching the filter**: rejected — doesn't work; the filter rejects tokenless requests before the security authorization rules are consulted.
+
+### Consequences
+- New endpoints appear in the docs automatically; only a `@Operation` summary and (if it's public) a `@SecurityRequirements` opt-out need remembering.
+- The docs-reachability contract is asserted by `OpenApiDocsTest`: `/v3/api-docs` returns 200 without a token, every controller path is present, the bearer scheme is declared, and the two public endpoints carry an empty security array. If a route stops being scanned, a named path assertion fails.
+- The permit rules live in two places (filter + security config) that must stay in sync — a mild duplication, flagged here as the revisit trigger if a third public-prefix category ever appears.
+- Swagger UI is reachable at `/swagger-ui.html` in local/dev; hitting it in prod returns 404 by configuration.
