@@ -103,6 +103,7 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0067 | Map bounding-box via native `ST_Within` + `ST_MakeEnvelope` queries | Accepted (revisit) |
 | 0068 | Map returns a bare pin array (no pagination envelope) | Accepted (revisit) |
 | 0069 | Map scope defaults to `group`; former members flagged, never filtered | Accepted (revisit) |
+| 0070 | Orphan cleanup diffs bucket keys against DB references, guarded by a grace window | Accepted (revisit) |
 
 ---
 
@@ -1653,3 +1654,30 @@ An absent `scope` defaults to `group` (the shared view), matching the home scree
 - Map and leaderboard share the same former-member definition, so a pin's grey state matches the roster's grey row.
 - `personal` scope still requires group membership (403 otherwise) — you can't view your own pins on a group you've left.
 - **Revisit when** a "my pints across all groups" map is wanted — that would need a scope that drops the `group_id` filter.
+
+---
+
+## ADR-0070: Orphan cleanup diffs bucket keys against DB references, guarded by a grace window
+
+Status: Accepted (revisit)
+Date: 2026-07-12
+
+### Context
+Three flows cross the DB ↔ S3 boundary non-transactionally and can leave S3 objects with no DB reference: pint creation is S3-first (ADR-0001), so a DB-insert failure after upload orphans the object; pint deletion is DB-first (ADR-0002) and account deletion is DB-cascade-then-async-S3, so a failed/lost async delete leaves the object behind. All three name a scheduled cleanup job as the safety net (l3-api.md §4). Both `pint_logs.photo_url` and `users.avatar_url` store the S3 **key** (not a URL), so "referenced" is exact string equality on keys.
+
+### Decision
+A daily `@Scheduled` job (03:15 UTC) computes the set difference `all bucket keys − all referenced keys` and deletes the remainder. Referenced keys come from two projection queries (`findAllPhotoKeys`, `findAllAvatarKeys`) that select only the key column, not whole rows. Bucket keys come from `S3Service.listAllObjects()`, which follows `ListObjectsV2` continuation tokens so the 1000-key page cap doesn't silently truncate the scan.
+
+The load-bearing guard is a **grace window** (`app.cleanup.orphan-grace-minutes`, default 60): an object is only deleted if it is both unreferenced *and* last modified before `now − grace`. Because creation is S3-first, an object is legitimately unreferenced in the gap between its upload and its DB insert; the grace window keeps such in-flight uploads off the delete list. DB references are read *before* the bucket is listed, so any reference that could be missed belongs to an object newer than the cutoff anyway — the window covers it. Per-object delete failures are caught and logged, not fatal; the next run retries.
+
+### Alternatives Considered
+- **No grace window (delete any unreferenced object immediately)**: rejected — it races the S3-first creation flow and would delete a photo uploaded seconds before its DB row exists.
+- **Per-object existence check (query the DB once per S3 object)**: rejected — N queries for N objects; the two projection queries + an in-memory `HashSet` is one round-trip per table and O(1) membership tests.
+- **SQS-consumer / event-driven cleanup**: rejected for MVP — needs extra infrastructure; a periodic full-bucket sweep is the simplest net that also catches orphans from *any* cause, not just enqueued ones.
+- **List whole entities to get keys**: rejected — loads columns and geometry we don't need; projections scan just the key column.
+
+### Consequences
+- The sweep is O(bucket size) each run; fine at MVP scale, but a large bucket means a full `ListObjectsV2` walk daily. **Revisit when** the bucket grows enough that a full scan is costly — a marker-based incremental scan or event-driven deletes would replace it.
+- An orphan lives at most ~1 day + grace before reclamation; acceptable for cost, and users never see it (nothing references it).
+- The grace default (60 min) is comfortably longer than any realistic upload→insert gap; if a deploy ever made that gap larger, the window is a single config knob.
+- Deleting a DB reference before its object (deletion flows) is always safe here: the object just becomes eligible on a later run.
