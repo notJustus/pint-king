@@ -108,6 +108,7 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0072 | End-to-end tests drive real HTTP journeys, threading tokens between calls | Accepted (revisit) |
 | 0073 | OpenAPI docs auto-generated from controllers, global bearer scheme, off in prod | Accepted (revisit) |
 | 0074 | Multi-stage Dockerfile; prod profile fails fast on missing env vars | Accepted (revisit) |
+| 0075 | Keep empty feature folders with `.gitkeep`, excluded from the build via a sync-group membership exception | Accepted (revisit) |
 
 ---
 
@@ -1810,3 +1811,27 @@ The API needs to ship as a deployable container (AWS ECS/App Runner later). Two 
 - The `HEALTHCHECK` gives orchestrators (ECS/App Runner) a real readiness signal tied to DB connectivity, not just process liveness.
 - Docs are already off in prod (ADR-0073); confirmed the docs routes don't serve a spec under the prod profile.
 - Revisit triggers: the dependency-warming layer uses `gradle dependencies` which is approximate; if it proves flaky a `--write-verification-metadata` or explicit resolve task could replace it. If CI moves to building the image as the test artifact, the `-x test` decision and the "tests run before build" assumption need revisiting.
+
+---
+
+## ADR-0075: Keep empty feature folders with `.gitkeep`, excluded from the build via a sync-group membership exception
+
+Status: Accepted (revisit)
+Date: 2026-07-12
+
+### Context
+Task 1 establishes the feature-based folder structure (`Core/`, `Features/*`, `Repositories/`, `Utilities/`) up front, before most of those folders have any source files. Git does not track empty directories, so a fresh clone would lose the structure unless each folder holds at least one committed file. Separately, the Xcode project was scaffolded with a modern **file-system-synchronized root group** (`PBXFileSystemSynchronizedRootGroup`, objectVersion 77): target membership is derived from what's on disk, so any file under `PintKing/` is automatically part of the build — including non-source files. Placing a `.gitkeep` in each folder to preserve it in git caused every `.gitkeep` to be picked up as a bundle resource; since they share a basename they all resolved to the same `PintKing.app/.gitkeep` output path, and the build failed with "Multiple commands produce … .gitkeep".
+
+### Decision
+Keep a `.gitkeep` in each still-empty folder so git tracks the directory, and attach a **`PBXFileSystemSynchronizedBuildFileExceptionSet`** to the root group that lists every `.gitkeep` under `membershipExceptions` for the `PintKing` target. This is Xcode's native mechanism for keeping a file on disk while excluding it from a target's build. `App/` needs no `.gitkeep` because it already holds the moved `PintKingApp.swift` and `ContentView.swift`. Adding a real source file to a folder later does not require touching the exception set — only the folder's `.gitkeep` may eventually be deleted once the folder has real content.
+
+### Alternatives Considered
+- **Delete the `.gitkeep` files:** rejected — the empty folders would not be committed, so the folder structure this task delivers would not survive a fresh clone, defeating the point of the task.
+- **Convert each folder to a manually-managed `PBXGroup`:** rejected — abandons the sync-group model and would force `project.pbxproj` edits every time a source file is added in later tasks. The sync group is the whole reason later tasks can drop `.swift` files in without editing the project file.
+- **Use a differently-named marker per folder (e.g. `Keychain.keep`):** rejected — unique names would sidestep the output-path clash without an exception set, but `.gitkeep` is the conventional marker and the exception-set approach is the correct, discoverable Xcode idiom; it also keeps non-source files out of the shipped bundle regardless of their names.
+
+### Consequences
+- The folder structure is committed and reproducible from a clean clone.
+- New Swift files added to any synced folder in later tasks are compiled automatically — no pbxproj edits.
+- One maintenance note: if a *non-source* file that should not ship in the bundle is ever committed into a synced folder, it must be added to `membershipExceptions` too, or the build will treat it as a resource.
+- Revisit trigger: once every folder has real source files, the `.gitkeep` files and their exception entries can be removed; not urgent, and harmless to leave.
