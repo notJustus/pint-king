@@ -104,6 +104,7 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0068 | Map returns a bare pin array (no pagination envelope) | Accepted (revisit) |
 | 0069 | Map scope defaults to `group`; former members flagged, never filtered | Accepted (revisit) |
 | 0070 | Orphan cleanup diffs bucket keys against DB references, guarded by a grace window | Accepted (revisit) |
+| 0071 | Property-based tests assert invariants against independent oracles, one spec per property | Accepted (revisit) |
 
 ---
 
@@ -1681,3 +1682,35 @@ The load-bearing guard is a **grace window** (`app.cleanup.orphan-grace-minutes`
 - An orphan lives at most ~1 day + grace before reclamation; acceptable for cost, and users never see it (nothing references it).
 - The grace default (60 min) is comfortably longer than any realistic upload→insert gap; if a deploy ever made that gap larger, the window is a single config knob.
 - Deleting a DB reference before its object (deletion flows) is always safe here: the object just becomes eligible on a later run.
+
+---
+
+## ADR-0071: Property-based tests assert invariants against independent oracles, one spec per property
+
+Status: Accepted (revisit)
+Date: 2026-07-12
+
+### Context
+The design doc (l3-api.md §6) marks 13 correctness properties as **(PBT)** — invariants that must hold across *all* valid inputs, not just the hand-picked examples the endpoint tests already cover. Task 29 implements them with `kotest-property`'s `checkAll`, ≥100 iterations each. Two questions had to be settled: (a) what plays the role of the "expected" value when the input is random, and (b) at what layer each property runs.
+
+### Decision
+**Independent oracle, never the implementation restated.** Each property asserts against a computation derived straight from the specification, phrased differently from the production code, so a bug in the code can't hide behind the same bug in the test. Examples: bounding-box membership is checked with an in-JVM `lat > swLat && … && lng < neLng` rectangle test, not by re-running PostGIS; the JPEG/PNG signature is spelled out as a literal byte prefix rather than calling `ImageValidation`; time-period filtering recomputes the Monday-00:00 boundary from `java.time` adjusters independently of `Periods`.
+
+**One spec file per property**, under a new `property/` test package, each documented with the design's `Feature: pint-king, Property N: <text>` tag in its class KDoc. Layer is chosen per property:
+- **Pure specs** (no Spring context) for logic with no DB dependency — file-type detection (6), dense ranking (20), period bounds (21), and the create/validate/delete-window service rules (17, 18, 19) with the repository and S3 mocked. These run in milliseconds and fuzz hundreds of cases cheaply.
+- **Container-backed specs** (`@SpringBootTest` + Testcontainers Postgres/LocalStack, same companion-object pattern as every other integration spec) for properties whose meaning *is* the database: invite-code uniqueness and join outcomes (10, 11), the active-group invariant under a random join/leave walk (16), authorization by role (26), rank delta (22), the PostGIS bounding box (24), and the account-deletion cascade (28). Each iteration cleans the tables first and uses an `AtomicInteger` suffix to keep unique columns (`apple_id`, `invite_code`) distinct across the hundreds of rows a run creates.
+
+Iteration counts are set per property (100–500) rather than a blanket 100 — cheap pure fuzzers run more; expensive container walks that reseed the DB every iteration run fewer but still ≥ the design's floor.
+
+### Alternatives Considered
+- **Assert against the implementation's own helper** (e.g. call `Periods.lowerBound` on both sides): rejected — a tautology; it proves the function equals itself, not that it's correct.
+- **All properties as pure/mocked tests**: rejected — the DB-dependent properties (unique constraints, `ST_Within`, cascade FKs) have no meaning without the real engine; mocking them would test the mock.
+- **All properties through the HTTP layer (MockMvc)**: rejected — most PBTs target a service/pure function; driving 500 iterations through the full servlet stack is far slower and adds nothing for logic that isn't about routing or serialization.
+- **One giant `PropertyTest` file**: rejected — one spec per property keeps each independently runnable and its `Feature/Property` tag unambiguous.
+- **Generate points exactly on the box edge for Property 24**: deliberately avoided — points are generated strictly inside/outside so the assertion never hinges on `ST_Within`'s boundary semantics, which the property text doesn't pin down.
+
+### Consequences
+- The container-backed property specs each stand up their own Postgres + LocalStack (per-class companion object, as the rest of the suite does), so a full `./gradlew test` run is dominated by these — several minutes. Acceptable for a portfolio project; **revisit when** the suite is slow enough to warrant a shared container or a Kotest tag that runs PBTs only in CI.
+- The near-boundary skip in the deletion-window property (Property 19) trades a hair of coverage at exactly 24h for freedom from clock-timing flakes; the exact boundary is still pinned by the example test in PintDeleteTest.
+- Properties without the **(PBT)** mark (1–5, 7–9, 12–15, 23, 25, 27) stay example-based in their existing endpoint specs — this task added no tests for them by design.
+- A failing property prints the falsifying seed, so any future regression reproduces deterministically.
