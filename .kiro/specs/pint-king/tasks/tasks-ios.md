@@ -270,7 +270,7 @@ PintKingTests/              (Unit tests, mirrors feature structure)
 - Permission state handling (granted → show camera, denied → show explanation)
 - Shutter tap triggers capture on the model
 
-**Commit point:** Camera opens full-screen, shows live preview on device, shutter captures. Permission denied state works.
+**Commit point:** Camera view compiles; permission-state handling and shutter-triggers-capture logic are unit-tested against a mocked `CameraModel`. Live preview and real capture require a physical device — implement correctly and note in the knowledge doc that on-device verification is still pending (the driver pauses before this task).
 
 ---
 
@@ -638,7 +638,7 @@ PintKingTests/              (Unit tests, mirrors feature structure)
 
 ### Task 30: Final integration test pass
 
-**What:** Run through all user flows end-to-end with mock data on a physical device. Verify every flow from the User Flows section works as designed.
+**What:** Run through all user flows end-to-end with mock data on a physical device. Verify every flow from the User Flows section works as designed. **This is a human-driven, on-device task** — the autonomous driver pauses before it and does not attempt it; Justus performs this pass manually.
 
 **Flows to verify:**
 - [ ] First launch → login → profile setup → empty home

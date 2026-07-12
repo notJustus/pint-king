@@ -385,7 +385,7 @@ Zero third-party dependencies for MVP. Everything is built with Apple-native fra
 | JSON encoding/decoding | Codable |
 | Location | CoreLocation |
 | Deep-linking | Universal Links + `.onOpenURL` |
-| Testing | XCTest (+ SwiftCheck where property-based testing applies) |
+| Testing | Swift Testing (`import Testing`, `@Test`, `#expect`) for unit + property-style tests; XCUITest for UI/integration tests |
 
 ---
 
@@ -393,16 +393,16 @@ Zero third-party dependencies for MVP. Everything is built with Apple-native fra
 
 The iOS app is tested in three layers:
 
-### Unit Tests (XCTest)
+### Unit Tests (Swift Testing)
 
 - **ViewModel logic**: state transitions, validation, calls to repositories (with mocked repositories).
 - **Repository logic**: caching behaviour, decision logic (network vs cache vs queue), with mocked `NetworkClient`.
 - **NetworkClient**: JWT injection, 401 retry-after-refresh, error mapping. Uses `URLProtocol` stubs for fake responses.
 - **Validation helpers**: HEIC→JPEG conversion, size checks, initials generation from display name.
 
-### Property-Based Tests (SwiftCheck, where applicable)
+### Property-Style Tests (Swift Testing parameterised `@Test`)
 
-Limited use on iOS — most properties live server-side. The iOS-relevant one:
+Limited use on iOS — most properties live server-side. There is **no third-party property-based library** (no SwiftCheck); the one iOS-relevant property is expressed as a parameterised `@Test` fed a broad set of inputs:
 
 - **Property 7 (initials generation)** — for any non-empty display name, the generated initials contain the first character of the first word and the first character of the last word (or just the first character if single-word), and are never empty.
 
