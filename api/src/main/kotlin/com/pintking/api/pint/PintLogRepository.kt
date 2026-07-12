@@ -21,6 +21,11 @@ interface PintLogRepository : JpaRepository<PintLogEntity, UUID> {
     fun deleteByUserId(userId: UUID)
     fun deleteByGroupId(groupId: UUID)
 
+    // Orphan cleanup (Task 28): every photo key currently referenced. photo_url is NOT NULL, so
+    // no null guard needed. Projected to strings to scan the column, not load whole rows.
+    @Query("SELECT p.photoUrl FROM PintLogEntity p")
+    fun findAllPhotoKeys(): List<String>
+
     // Paginated listings (Task 22). all_time uses the first; week/month bound by logged_at.
     fun findByGroupIdOrderByLoggedAtDesc(groupId: UUID, pageable: Pageable): Page<PintLogEntity>
     fun findByGroupIdAndLoggedAtGreaterThanEqualOrderByLoggedAtDesc(

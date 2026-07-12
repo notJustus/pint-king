@@ -6,11 +6,16 @@ import software.amazon.awssdk.core.sync.RequestBody
 import software.amazon.awssdk.services.s3.S3Client
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest
 import software.amazon.awssdk.services.s3.model.GetObjectRequest
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Request
 import software.amazon.awssdk.services.s3.model.PutObjectRequest
 import software.amazon.awssdk.services.s3.presigner.S3Presigner
 import software.amazon.awssdk.services.s3.presigner.model.GetObjectPresignRequest
 import java.time.Duration
+import java.time.Instant
 import java.util.UUID
+
+/** One S3 object as the orphan-cleanup job sees it: its key and when it was last written. */
+data class S3ObjectSummary(val key: String, val lastModified: Instant)
 
 @Service
 class S3Service(
@@ -30,6 +35,29 @@ class S3Service(
         val key = "avatars/$userId/${UUID.randomUUID()}.jpg"
         putObject(key, fileBytes)
         return key
+    }
+
+    /**
+     * Every object in the bucket, paginated. The orphan-cleanup job (Task 28) diffs these keys
+     * against the DB's referenced keys, so it needs the whole listing — `ListObjectsV2` caps each
+     * response at 1000 keys, hence the continuation-token loop.
+     */
+    fun listAllObjects(): List<S3ObjectSummary> {
+        val summaries = mutableListOf<S3ObjectSummary>()
+        var continuationToken: String? = null
+        do {
+            val response = s3Client.listObjectsV2(
+                ListObjectsV2Request.builder()
+                    .bucket(bucket)
+                    .continuationToken(continuationToken)
+                    .build()
+            )
+            response.contents().forEach {
+                summaries.add(S3ObjectSummary(it.key(), it.lastModified()))
+            }
+            continuationToken = if (response.isTruncated) response.nextContinuationToken() else null
+        } while (continuationToken != null)
+        return summaries
     }
 
     fun deleteObject(key: String) {
