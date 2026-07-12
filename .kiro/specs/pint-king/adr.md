@@ -107,6 +107,7 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0071 | Property-based tests assert invariants against independent oracles, one spec per property | Accepted (revisit) |
 | 0072 | End-to-end tests drive real HTTP journeys, threading tokens between calls | Accepted (revisit) |
 | 0073 | OpenAPI docs auto-generated from controllers, global bearer scheme, off in prod | Accepted (revisit) |
+| 0074 | Multi-stage Dockerfile; prod profile fails fast on missing env vars | Accepted (revisit) |
 
 ---
 
@@ -1778,3 +1779,34 @@ Task 31 asks for browsable API documentation. The controllers, their request par
 - The docs-reachability contract is asserted by `OpenApiDocsTest`: `/v3/api-docs` returns 200 without a token, every controller path is present, the bearer scheme is declared, and the two public endpoints carry an empty security array. If a route stops being scanned, a named path assertion fails.
 - The permit rules live in two places (filter + security config) that must stay in sync — a mild duplication, flagged here as the revisit trigger if a third public-prefix category ever appears.
 - Swagger UI is reachable at `/swagger-ui.html` in local/dev; hitting it in prod returns 404 by configuration.
+
+## ADR-0074: Multi-stage Dockerfile; prod profile fails fast on missing env vars
+
+Status: Accepted (revisit)
+Date: 2026-07-12
+
+### Context
+The API needs to ship as a deployable container (AWS ECS/App Runner later). Two questions: how to build the image so incremental builds are fast and the runtime is lean, and how the `prod` profile should source deployment-specific config (DB, JWT secret, S3) so a misconfigured deploy is caught early rather than silently running with dev defaults.
+
+### Decision
+**Multi-stage Dockerfile.** A `gradle:8.8-jdk21` build stage (matching the wrapper's pinned toolchain) copies the build files first and resolves dependencies as a separate cached layer, then copies `src` and runs `bootJar`. The runtime stage is a slim `eclipse-temurin:21-jre` that copies only the boot jar, runs as a non-root `spring` user, and defaults `SPRING_PROFILES_ACTIVE=prod`.
+
+**Tests are skipped in the image build (`-x test`).** The suite is Testcontainers-based and needs a Docker daemon that isn't available inside the build stage; tests run via `./gradlew build` in local/CI before the image is built. The Dockerfile builds a jar, it does not gate on tests.
+
+**The `prod` profile pulls every deployment value from an env var with no default** — `DB_URL`/`DB_USERNAME`/`DB_PASSWORD`, `JWT_SECRET`, `S3_BUCKET`/`S3_ENDPOINT`/`S3_REGION`, `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`. Spring's placeholder resolution throws at startup if any is absent, so a misconfigured container crashes immediately instead of falling back to the dev secret and localhost endpoints baked into `application.yml`. The dev fallbacks stay in `application.yml` for the default/local profiles only.
+
+**Health check on `/actuator/health`.** Actuator was already a dependency and the endpoint is already public in both the JWT filter and `SecurityConfig`. The `prod` profile narrows actuator's web exposure to `health` only (`show-details: never`), and the Dockerfile adds a `HEALTHCHECK` that curls it with a 40s start-period grace so the container reports `healthy` only once the DB connection is live.
+
+### Alternatives Considered
+- **Single-stage build shipping the whole Gradle image**: rejected — hundreds of MB of build tooling in the runtime image for no benefit; the JRE-only runtime is far smaller and has less attack surface.
+- **Run tests inside the image build**: rejected — Testcontainers needs a Docker daemon (docker-in-docker) that isn't present in the build stage; tests belong in the CI step that precedes `docker build`.
+- **Give prod config the same `${VAR:default}` fallbacks as `application.yml`**: rejected — that's exactly the silent-misconfiguration trap; a prod container missing `JWT_SECRET` would sign tokens with the well-known dev secret. No-default placeholders make the failure loud and immediate.
+- **Run as root**: rejected — a dedicated non-root user is a cheap, standard hardening step.
+- **Copy the whole repo into the build context**: mitigated with `.dockerignore` (excludes `build/`, `.gradle/`, `.env`, compose files) so the context stays small and secrets never enter the image.
+
+### Consequences
+- Image builds are incremental: editing source re-runs only the `bootJar` layer, not dependency resolution, because the dependency layer is keyed on the build files alone.
+- A prod deploy that forgets any required env var fails at startup with a clear "Could not resolve placeholder" error — verified by running the image without `JWT_SECRET`.
+- The `HEALTHCHECK` gives orchestrators (ECS/App Runner) a real readiness signal tied to DB connectivity, not just process liveness.
+- Docs are already off in prod (ADR-0073); confirmed the docs routes don't serve a spec under the prod profile.
+- Revisit triggers: the dependency-warming layer uses `gradle dependencies` which is approximate; if it proves flaky a `--write-verification-metadata` or explicit resolve task could replace it. If CI moves to building the image as the test artifact, the `-x test` decision and the "tests run before build" assumption need revisiting.
