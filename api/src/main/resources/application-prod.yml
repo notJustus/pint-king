@@ -1,5 +1,35 @@
-# Production overrides. Expanded in Task 32 (DB URL, S3 bucket, JWT secret placeholders).
-# For now it exists to disable the API docs endpoints in production.
+# Production profile. Every deployment-specific value comes from an environment
+# variable with NO default — a misconfigured container fails fast at startup
+# instead of silently falling back to dev credentials or a local endpoint.
+spring:
+  datasource:
+    url: ${DB_URL}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+
+app:
+  jwt:
+    # No fallback here on purpose: the dev secret in application.yml must never
+    # reach production. Absence of JWT_SECRET is a startup failure.
+    secret: ${JWT_SECRET}
+  s3:
+    bucket: ${S3_BUCKET}
+    endpoint: ${S3_ENDPOINT}
+    region: ${S3_REGION}
+    access-key: ${AWS_ACCESS_KEY_ID}
+    secret-key: ${AWS_SECRET_ACCESS_KEY}
+
+# Expose only the health endpoint; keep the rest of actuator private in prod.
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never
+
+# API docs are internal detail — off in production. (See ADR-0073.)
 springdoc:
   api-docs:
     enabled: false

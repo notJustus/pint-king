@@ -1,0 +1,16 @@
+# Build output and Gradle caches — regenerated inside the image, and huge.
+build/
+.gradle/
+.kotlin/
+
+# IDE / OS cruft
+.idea/
+*.iml
+.DS_Store
+
+# Local secrets — must never enter the image.
+.env
+
+# Compose + local-only tooling aren't part of the app image.
+docker-compose.yml
+localstack-init/
