@@ -1,5 +1,8 @@
 package com.pintking.api.user
 
+import io.swagger.v3.oas.annotations.Operation
+import io.swagger.v3.oas.annotations.Parameter
+import io.swagger.v3.oas.annotations.tags.Tag
 import org.springframework.http.ResponseEntity
 import org.springframework.security.core.annotation.AuthenticationPrincipal
 import org.springframework.web.bind.annotation.DeleteMapping
@@ -15,34 +18,39 @@ import java.util.UUID
 
 @RestController
 @RequestMapping("/users")
+@Tag(name = "Users", description = "The signed-in user's own profile and avatar.")
 class UserController(
     private val userService: UserService,
     private val accountService: AccountService
 ) {
 
     @GetMapping("/me")
-    fun getMe(@AuthenticationPrincipal userId: UUID): ResponseEntity<UserProfileResponse> {
+    @Operation(summary = "Get my profile")
+    fun getMe(@Parameter(hidden = true) @AuthenticationPrincipal userId: UUID): ResponseEntity<UserProfileResponse> {
         return ResponseEntity.ok(userService.getProfile(userId))
     }
 
     @PatchMapping("/me")
+    @Operation(summary = "Update my profile", description = "Updates display name and/or active group; omitted fields are left unchanged.")
     fun updateMe(
-        @AuthenticationPrincipal userId: UUID,
+        @Parameter(hidden = true) @AuthenticationPrincipal userId: UUID,
         @RequestBody request: UpdateUserRequest
     ): ResponseEntity<UserProfileResponse> {
         return ResponseEntity.ok(userService.updateProfile(userId, request))
     }
 
     @PostMapping("/me/avatar")
+    @Operation(summary = "Upload avatar", description = "Uploads a new avatar image and returns the updated profile.")
     fun uploadAvatar(
-        @AuthenticationPrincipal userId: UUID,
+        @Parameter(hidden = true) @AuthenticationPrincipal userId: UUID,
         @RequestParam("file") file: MultipartFile
     ): ResponseEntity<UserProfileResponse> {
         return ResponseEntity.ok(userService.updateAvatar(userId, file))
     }
 
     @DeleteMapping("/me")
-    fun deleteMe(@AuthenticationPrincipal userId: UUID): ResponseEntity<Void> {
+    @Operation(summary = "Delete my account", description = "Deletes the account and cascades removal of the user's data.")
+    fun deleteMe(@Parameter(hidden = true) @AuthenticationPrincipal userId: UUID): ResponseEntity<Void> {
         accountService.deleteAccount(userId)
         return ResponseEntity.noContent().build()
     }

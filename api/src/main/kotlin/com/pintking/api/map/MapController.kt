@@ -1,5 +1,8 @@
 package com.pintking.api.map
 
+import io.swagger.v3.oas.annotations.Operation
+import io.swagger.v3.oas.annotations.Parameter
+import io.swagger.v3.oas.annotations.tags.Tag
 import org.springframework.http.ResponseEntity
 import org.springframework.security.core.annotation.AuthenticationPrincipal
 import org.springframework.web.bind.annotation.GetMapping
@@ -11,13 +14,15 @@ import java.util.UUID
 
 @RestController
 @RequestMapping("/pints")
+@Tag(name = "Map", description = "Pints as map pins within a viewport bounding box.")
 class MapController(
     private val mapService: MapService
 ) {
 
     @GetMapping("/map")
+    @Operation(summary = "Get pints in a bounding box", description = "Returns pins for pints within the SW/NE bounding box, scoped personal or group.")
     fun getMapPints(
-        @AuthenticationPrincipal userId: UUID,
+        @Parameter(hidden = true) @AuthenticationPrincipal userId: UUID,
         @RequestParam("group_id") groupId: UUID,
         @RequestParam(value = "scope", required = false) scope: String?,
         @RequestParam("sw_lat") swLat: Double,

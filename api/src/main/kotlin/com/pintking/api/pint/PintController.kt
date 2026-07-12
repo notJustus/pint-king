@@ -1,6 +1,9 @@
 package com.pintking.api.pint
 
 import com.pintking.api.common.PageResponse
+import io.swagger.v3.oas.annotations.Operation
+import io.swagger.v3.oas.annotations.Parameter
+import io.swagger.v3.oas.annotations.tags.Tag
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.security.core.annotation.AuthenticationPrincipal
@@ -19,13 +22,15 @@ import java.util.UUID
 
 @RestController
 @RequestMapping("/pints")
+@Tag(name = "Pints", description = "Log pints (with mandatory photo), browse the group feed, edit and delete.")
 class PintController(
     private val pintService: PintService
 ) {
 
     @PostMapping
+    @Operation(summary = "Log a pint", description = "Creates a pint log for the caller's active group. Photo is mandatory; the photo is stored first, then the log row.")
     fun createPint(
-        @AuthenticationPrincipal userId: UUID,
+        @Parameter(hidden = true) @AuthenticationPrincipal userId: UUID,
         @RequestParam(value = "photo", required = false) photo: MultipartFile?,
         @RequestParam(value = "note", required = false) note: String?,
         @RequestParam(value = "drinkType", required = false) drinkType: String?,
@@ -41,8 +46,9 @@ class PintController(
     }
 
     @GetMapping
+    @Operation(summary = "List pints (feed)", description = "Paginated group feed. Filter by period (all_time, this_week, this_month).")
     fun listPints(
-        @AuthenticationPrincipal userId: UUID,
+        @Parameter(hidden = true) @AuthenticationPrincipal userId: UUID,
         @RequestParam("group_id") groupId: UUID,
         @RequestParam(value = "period", required = false) period: String?,
         @RequestParam(value = "page", required = false) page: Int?,
@@ -51,16 +57,18 @@ class PintController(
         pintService.listPints(userId, groupId, period, page, size)
 
     @PatchMapping("/{id}")
+    @Operation(summary = "Update a pint", description = "Updates note or drink type. Creator only. A blank note clears it.")
     fun updatePint(
-        @AuthenticationPrincipal userId: UUID,
+        @Parameter(hidden = true) @AuthenticationPrincipal userId: UUID,
         @PathVariable id: UUID,
         @RequestBody request: UpdatePintRequest
     ): ResponseEntity<PintResponse> =
         ResponseEntity.ok(pintService.updatePint(userId, id, request))
 
     @DeleteMapping("/{id}")
+    @Operation(summary = "Delete a pint", description = "Deletes a pint within 24h of logging. Creator only. Photo is cleaned up asynchronously.")
     fun deletePint(
-        @AuthenticationPrincipal userId: UUID,
+        @Parameter(hidden = true) @AuthenticationPrincipal userId: UUID,
         @PathVariable id: UUID
     ): ResponseEntity<Void> {
         pintService.deletePint(userId, id)

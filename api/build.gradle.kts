@@ -42,6 +42,9 @@ dependencies {
     implementation("software.amazon.awssdk:s3:2.25.60")
     implementation("software.amazon.awssdk:s3-transfer-manager:2.25.60")
 
+    // OpenAPI / Swagger UI
+    implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:2.8.9")
+
     // Testing
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation("org.springframework.security:spring-security-test")

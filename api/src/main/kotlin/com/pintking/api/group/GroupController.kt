@@ -1,5 +1,8 @@
 package com.pintking.api.group
 
+import io.swagger.v3.oas.annotations.Operation
+import io.swagger.v3.oas.annotations.Parameter
+import io.swagger.v3.oas.annotations.tags.Tag
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.security.core.annotation.AuthenticationPrincipal
@@ -15,13 +18,15 @@ import java.util.UUID
 
 @RestController
 @RequestMapping("/groups")
+@Tag(name = "Groups", description = "Create and join groups, manage members and invite codes.")
 class GroupController(
     private val groupService: GroupService
 ) {
 
     @PostMapping
+    @Operation(summary = "Create a group", description = "Creates a group with a generated invite code; the caller becomes its admin.")
     fun createGroup(
-        @AuthenticationPrincipal userId: UUID,
+        @Parameter(hidden = true) @AuthenticationPrincipal userId: UUID,
         @RequestBody request: CreateGroupRequest
     ): ResponseEntity<GroupResponse> {
         val group = groupService.createGroup(userId, request)
@@ -29,8 +34,9 @@ class GroupController(
     }
 
     @PostMapping("/join")
+    @Operation(summary = "Join a group", description = "Joins the group identified by the invite code.")
     fun joinGroup(
-        @AuthenticationPrincipal userId: UUID,
+        @Parameter(hidden = true) @AuthenticationPrincipal userId: UUID,
         @RequestBody request: JoinGroupRequest
     ): ResponseEntity<GroupResponse> {
         val group = groupService.joinGroup(userId, request)
@@ -38,23 +44,26 @@ class GroupController(
     }
 
     @GetMapping
+    @Operation(summary = "List my groups")
     fun listGroups(
-        @AuthenticationPrincipal userId: UUID
+        @Parameter(hidden = true) @AuthenticationPrincipal userId: UUID
     ): ResponseEntity<List<GroupResponse>> {
         return ResponseEntity.ok(groupService.listGroups(userId))
     }
 
     @GetMapping("/{id}")
+    @Operation(summary = "Get group detail", description = "Returns the group with its member list.")
     fun getGroup(
-        @AuthenticationPrincipal userId: UUID,
+        @Parameter(hidden = true) @AuthenticationPrincipal userId: UUID,
         @PathVariable id: UUID
     ): ResponseEntity<GroupDetailResponse> {
         return ResponseEntity.ok(groupService.getGroup(userId, id))
     }
 
     @PatchMapping("/{id}")
+    @Operation(summary = "Update group name", description = "Renames the group. Admin only.")
     fun updateGroup(
-        @AuthenticationPrincipal userId: UUID,
+        @Parameter(hidden = true) @AuthenticationPrincipal userId: UUID,
         @PathVariable id: UUID,
         @RequestBody request: UpdateGroupRequest
     ): ResponseEntity<GroupResponse> {
@@ -62,8 +71,9 @@ class GroupController(
     }
 
     @PostMapping("/{id}/members/{userId}/promote")
+    @Operation(summary = "Promote a member to admin", description = "Idempotent. Admin only.")
     fun promoteMember(
-        @AuthenticationPrincipal callerId: UUID,
+        @Parameter(hidden = true) @AuthenticationPrincipal callerId: UUID,
         @PathVariable id: UUID,
         @PathVariable userId: UUID
     ): ResponseEntity<Void> {
@@ -72,16 +82,18 @@ class GroupController(
     }
 
     @PostMapping("/{id}/invite-code/regenerate")
+    @Operation(summary = "Regenerate invite code", description = "Issues a new invite code, invalidating the old one. Admin only.")
     fun regenerateInviteCode(
-        @AuthenticationPrincipal userId: UUID,
+        @Parameter(hidden = true) @AuthenticationPrincipal userId: UUID,
         @PathVariable id: UUID
     ): ResponseEntity<GroupResponse> {
         return ResponseEntity.ok(groupService.regenerateInviteCode(userId, id))
     }
 
     @DeleteMapping("/{id}/members/{userId}")
+    @Operation(summary = "Remove a member or leave", description = "Removes a member (admin) or leaves the group (self). Removal also blocks re-joining via the current code.")
     fun removeMember(
-        @AuthenticationPrincipal callerId: UUID,
+        @Parameter(hidden = true) @AuthenticationPrincipal callerId: UUID,
         @PathVariable id: UUID,
         @PathVariable userId: UUID
     ): ResponseEntity<Void> {

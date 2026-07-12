@@ -20,7 +20,9 @@ class JwtAuthenticationFilter(
 
     override fun shouldNotFilter(request: HttpServletRequest): Boolean {
         val path = request.requestURI
-        return path in PUBLIC_PATHS || path == "/actuator/health"
+        return path in PUBLIC_PATHS ||
+            path == "/actuator/health" ||
+            PUBLIC_PREFIXES.any { path.startsWith(it) }
     }
 
     override fun doFilterInternal(
@@ -62,5 +64,8 @@ class JwtAuthenticationFilter(
         // Auth endpoints that must remain reachable without a JWT.
         // Everything else under /auth (e.g. /auth/logout) requires authentication.
         val PUBLIC_PATHS = setOf("/auth/apple", "/auth/refresh")
+
+        // Prefixes served without a JWT: the OpenAPI document and Swagger UI assets.
+        val PUBLIC_PREFIXES = listOf("/v3/api-docs", "/swagger-ui")
     }
 }

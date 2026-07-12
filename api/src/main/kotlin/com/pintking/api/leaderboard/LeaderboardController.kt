@@ -1,5 +1,8 @@
 package com.pintking.api.leaderboard
 
+import io.swagger.v3.oas.annotations.Operation
+import io.swagger.v3.oas.annotations.Parameter
+import io.swagger.v3.oas.annotations.tags.Tag
 import org.springframework.http.ResponseEntity
 import org.springframework.security.core.annotation.AuthenticationPrincipal
 import org.springframework.web.bind.annotation.GetMapping
@@ -11,13 +14,15 @@ import java.util.UUID
 
 @RestController
 @RequestMapping("/groups")
+@Tag(name = "Leaderboard", description = "Ranked pint counts per group with rank deltas from prior periods.")
 class LeaderboardController(
     private val leaderboardService: LeaderboardService
 ) {
 
     @GetMapping("/{id}/leaderboard")
+    @Operation(summary = "Get group leaderboard", description = "Dense-ranked members by pint count for the given period, with crown flag, rank deltas, and a former-members section.")
     fun getLeaderboard(
-        @AuthenticationPrincipal userId: UUID,
+        @Parameter(hidden = true) @AuthenticationPrincipal userId: UUID,
         @PathVariable id: UUID,
         @RequestParam(value = "period", required = false) period: String?
     ): ResponseEntity<LeaderboardResponse> =

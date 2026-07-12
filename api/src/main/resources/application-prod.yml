@@ -1,0 +1,7 @@
+# Production overrides. Expanded in Task 32 (DB URL, S3 bucket, JWT secret placeholders).
+# For now it exists to disable the API docs endpoints in production.
+springdoc:
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false
