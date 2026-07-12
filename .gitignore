@@ -10,3 +10,6 @@
 # Xcode per-user state
 xcuserdata/
 *.xcuserstate
+
+# Local iOS progress log (agent-maintained, not committed)
+/.kiro/ios-progress.md
