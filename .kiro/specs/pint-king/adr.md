@@ -109,6 +109,7 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0073 | OpenAPI docs auto-generated from controllers, global bearer scheme, off in prod | Accepted (revisit) |
 | 0074 | Multi-stage Dockerfile; prod profile fails fast on missing env vars | Accepted (revisit) |
 | 0075 | Keep empty feature folders with `.gitkeep`, excluded from the build via a sync-group membership exception | Accepted (revisit) |
+| 0076 | iOS domain models double as API DTOs, decoded through one shared camelCase/ISO-8601 coder | Accepted (revisit) |
 
 ---
 
@@ -1835,3 +1836,28 @@ Keep a `.gitkeep` in each still-empty folder so git tracks the directory, and at
 - New Swift files added to any synced folder in later tasks are compiled automatically — no pbxproj edits.
 - One maintenance note: if a *non-source* file that should not ship in the bundle is ever committed into a synced folder, it must be added to `membershipExceptions` too, or the build will treat it as a resource.
 - Revisit trigger: once every folder has real source files, the `.gitkeep` files and their exception entries can be removed; not urgent, and harmless to leave.
+
+---
+
+## ADR-0076: iOS domain models double as API DTOs, decoded through one shared camelCase/ISO-8601 coder
+
+Status: Accepted (revisit)
+Date: 2026-07-12
+
+### Context
+Task 2 defines the iOS domain models (`User`, `Group`, `GroupMember`, `PintLog`, `LeaderboardEntry`, `Coordinate`) and shared enums (`DrinkType`, `Period`, `GroupMemberRole`), plus `APIError`. These types have to (a) be used across the app's layers as the in-memory domain representation and (b) decode from the JSON the Kotlin/Spring API emits. Two independent questions arose: whether to introduce a separate DTO layer that maps to distinct domain types, and how to configure JSON coding so the wire format is specified once rather than re-derived at every call site. The API serialises with Jackson defaults — **camelCase** field names (confirmed against existing ADRs: `inviteCode` in ADR-0047/0051, `isFormerMember` in ADR-0069, `displayName`/`activeGroupId` in ADR-0036) — and all timestamps are ISO 8601 UTC with no fractional seconds (ADR-0013).
+
+### Decision
+Use the Codable domain structs **directly as the API DTOs** — no separate DTO-to-domain mapping layer for MVP. Because the API is camelCase and Swift properties are camelCase, the synthesised `Codable` conformance matches the wire format with **no custom `CodingKeys`**. Enum raw values are set to the exact wire strings (`DrinkType`/`GroupMemberRole` lowercase matching the DB CHECK constraints; `Period` snake_case matching the `?period=` query param). All encoding/decoding goes through a single `enum JSONCoding` that vends a `JSONEncoder`/`JSONDecoder` pair configured with `.iso8601` date strategy, so the date format lives in exactly one place. `APIError` exposes a pure `from(statusCode:)` mapping (400 and 422 both → `.validationFailed`; 2xx → `nil`; unrecognised non-2xx → `.serverError`).
+
+### Alternatives Considered
+- **Separate DTO layer with mapping to domain types:** the textbook clean-architecture split. Rejected for MVP — the API response shapes *are* the shapes the UI needs; a mapping layer would be pure boilerplate with no divergence to absorb. Revisit if/when the client needs a field the API doesn't send (or vice versa).
+- **`.convertFromSnakeCase` decoding + snake_case-free models:** would be required if the API were snake_case. It isn't (Jackson camelCase), so enabling it would be wrong and would silently mangle already-camelCase keys. Rejected on the facts.
+- **Per-call-site `JSONDecoder()` construction:** rejected — every site would have to remember to set `.iso8601`, and a missed one would fail to parse the API's dates. Centralising in `JSONCoding` removes that footgun.
+- **Enums keyed off Swift case names with a custom encoder transform:** unnecessary; string raw values are the simplest exact match to the DB/API strings and are self-documenting.
+
+### Consequences
+- Minimal code: no mapping layer, no `CodingKeys`, no bespoke coders scattered around. Mock repositories (Task 3) and the real `NetworkClient` (Task 26) both decode identical bytes into these types.
+- The models are coupled to the API's serialization conventions. A change on the API side (e.g. switching to snake_case, or adding fractional-second timestamps) requires a coordinated change here — but it's localised to `JSONCoding` (format) and the affected struct (fields).
+- Structs are `Equatable` + `Sendable` (Swift 6 concurrency-safe value types) and `Identifiable` where a natural id exists (`LeaderboardEntry.id` is a computed `userId`).
+- **Revisit when:** the client's needs diverge from the API payloads enough to justify a real DTO/mapping layer, or the API changes its casing/date conventions.
