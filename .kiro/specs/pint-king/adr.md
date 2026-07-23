@@ -120,6 +120,7 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0084 | Location permission behind a `LocationPermissionRequesting` protocol (real CLLocationManager + mock); full LocationService deferred | Accepted (revisit) |
 | 0085 | Profile Setup gated in `RootView` by a session-local `didCompleteSetup` flag; view model owns no persisted profile state | Accepted (revisit) |
 | 0086 | Group switcher reads Active_Group live from the repository (shared state), caching only the fetched group list | Accepted (revisit) |
+| 0087 | Leaderboard view model derives active/former split and crown from the fetched board; Home composes switcher + leaderboard | Accepted (revisit) |
 
 ---
 
@@ -2095,3 +2096,30 @@ The Home tab's group switcher (tasks-ios.md Task 8, l3-ios-app.md §"Home Tab") 
 - The view model is trivially unit-testable without SwiftUI: `select(_:)` is asserted by reading `repository.activeGroup` back, and the empty state by the `hasGroups`/`activeGroupName` computed properties (6 `GroupSwitcherViewModelTests` cases).
 - Create/Join are inert closures for now; the empty-state buttons don't navigate until Tasks 20–21 provide the destinations.
 - **Revisit when:** the leaderboard (Task 9) lands next to the switcher on Home and we decide whether they share a container view model or stay separate; and when the networking layer (Task 26) replaces the silent `try?` fetch with a real loading/error path.
+
+---
+
+## ADR-0087: Leaderboard view model derives the active/former split and crown from the fetched board; Home composes switcher + leaderboard
+
+Status: Accepted (revisit)
+Date: 2026-07-23
+
+### Context
+Task 9 (tasks-ios.md, l3-ios-app.md §"Home Tab", requirements §1) builds the leaderboard: a period filter (All-Time / This Week / This Month), a ranked list of active members (crown on rank 1, movement delta for bounded periods), and a separate greyed "Former Members" section (design Property 23). The board comes from `LeaderboardRepositoryProtocol.getLeaderboard(groupId:period:)`, which returns a flat `[LeaderboardEntry]` — active members already rank-ordered, former members appended with `rank == 0` / `rankDelta == nil`. Several rendering decisions had to live somewhere testable: which rows are "former", which wear the crown (a rank-1 *tie* means several crowns via dense ranking), and whether the delta shows at all. Also open: how the Home tab composes the Task 8 switcher (previously built but unwired) with this leaderboard, and which group the board is fetched for.
+
+### Decision
+`LeaderboardViewModel` (`@MainActor @Observable`) owns only screen-local state: the fetched `entries`, the `selectedPeriod` (starts `.allTime`, mutated only via `select(_:)` so it can't drift from `entries`), and an `isLoading` flag. It reads the target group **live** from `groupRepository.activeGroup` rather than taking a group id — same shared-state rule as the switcher (ADR-0086), so switching groups re-fetches the right board for free. It exposes pure derived views the SwiftUI layer renders without any logic of its own: `activeMembers` / `formerMembers` (partition on `isFormerMember`), `showsRankDelta` (`selectedPeriod != .allTime`, ADR-0064), `isCrowned(_:)` (`!isFormerMember && rank == 1`, so every tied rank-1 row is crowned), and `hasEntries` / `hasFormerMembers`. `load()` clears the list when there's no active group, otherwise fetches with a silent `try?` (no error affordance until Task 26); `select(_:)` is a no-op on an unchanged period; `refresh()` (pull-to-refresh) is a `load()` alias. Skeleton rows show only on the *first* load (`isLoading && !hasEntries`) so a period switch or refresh doesn't flash the skeleton over existing content.
+
+The Home tab is composed by a new `HomeView`: it branches on `groupRepository.activeGroup` — nil ⇒ the switcher's full empty-state prompt owns the screen; non-nil ⇒ `LeaderboardView` as content with `GroupSwitcherView` collapsed into the nav-bar principal slot. `leaderboardRepository` is threaded `PintKingApp → RootView → ContentView → HomeView` alongside the existing session repositories, and ContentView's Home tab now renders `HomeView` instead of the placeholder text.
+
+### Alternatives Considered
+- **A shared `HomeViewModel` owning switcher + leaderboard state:** rejected (as flagged in ADR-0086) — the two coordinate only through the shared Active_Group on the repository, so two independent view models stay simpler and independently testable. `HomeView` is a thin structural composer with no state of its own.
+- **Pass the group id into the leaderboard view model:** rejected — it would need re-injection on every switch and could go stale; reading `activeGroup` through the repository keeps one source of truth.
+- **Compute the crown/split in the View:** rejected — ties at rank 1 and the former-member partition are exactly the load-bearing bits worth unit-testing; keeping them on the view model lets the 9 `LeaderboardViewModelTests` cases assert them with no SwiftUI.
+- **Show skeletons on every fetch:** rejected — flashing the skeleton over a populated board during a period switch/refresh is jarring; gating on `!hasEntries` limits it to the genuine first load.
+
+### Consequences
+- The View is a pure renderer; every branch it takes (crown, delta, former section, empty, skeleton) maps to a named view-model property, so the screen's behaviour is verified without the simulator UI (9 `LeaderboardViewModelTests`).
+- The Home tab is finally live end-to-end: switcher in the title, ranked board below, empty state for a groupless user — the composition ADR-0086 deferred.
+- Avatars are initials placeholders for now (`InitialsGenerator`); leaderboard rows carry an `avatarUrl` path, but loading remote images needs the networking layer, so real avatars land with Task 26.
+- **Revisit when:** the networking layer (Task 26) replaces the silent `try?` with a real loading/error path; and Task 10 (member pint history) adds row navigation off the leaderboard, at which point `HomeView`'s `NavigationStack` gains destinations.
