@@ -117,6 +117,8 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0081 | `InitialsGenerator` splits on whitespace, keeps grapheme clusters whole, and never returns empty | Accepted (revisit) |
 | 0082 | The "+" tab is a trigger routed through a `RootTabViewModel`, not a selectable tab | Accepted (revisit) |
 | 0083 | Root view gates Login vs tab bar by observing the auth repository; LoginViewModel maps errors, owns no auth state | Accepted (revisit) |
+| 0084 | Location permission behind a `LocationPermissionRequesting` protocol (real CLLocationManager + mock); full LocationService deferred | Accepted (revisit) |
+| 0085 | Profile Setup gated in `RootView` by a session-local `didCompleteSetup` flag; view model owns no persisted profile state | Accepted (revisit) |
 
 ---
 
@@ -2027,3 +2029,46 @@ Add a `RootView` in `App/` that reads `authRepository.isAuthenticated` and rende
 - The Login logic is fully unit-testable without SwiftUI (`LoginViewModelTests` drives success, failure, and retry via `shouldFailLogin`); the view is a thin renderer of `isLoggingIn`/`errorMessage`.
 - The Sign in with Apple button is styled but not yet wired to `AuthenticationServices`; the real `ASAuthorizationController` flow lands with the backend (Task 26), at which point `message(for:)` gains real Apple-error cases.
 - **Revisit when:** the real Apple flow lands (Task 26) — error mapping will need concrete `ASAuthorizationError` cases; and when the deep-link invite flow (Task 28) needs to persist a code through the unauthenticated → authenticated transition, which this root gate is the natural place to coordinate.
+
+## ADR-0084: Location permission behind a `LocationPermissionRequesting` protocol; full location service deferred to Task 14
+
+Status: Accepted (revisit)
+Date: 2026-07-23
+
+### Context
+Profile Setup's "Continue" must request when-in-use location permission (`CLLocationManager.requestWhenInUseAuthorization()`) before advancing to Home (requirements §1, l3-ios-app.md §4). Two problems for a TDD task: (1) `CLLocationManager` needs a real device/simulator and delivers its answer asynchronously via a delegate callback — it can't be driven from a plain unit test; and (2) the full location capability (reading coordinates at shutter time, with a 10s timeout) belongs to Task 14, not here. Task 7 only needs the *permission request* step, and it needs it to be unit-testable.
+
+### Decision
+Introduce a tiny `@MainActor protocol LocationPermissionRequesting` with a single `func request() async -> LocationPermissionDecision` (`.granted` / `.denied`). Two conformers: `CLLocationPermission` (the real one — bridges the `CLLocationManagerDelegate` authorization callback into async/await via a `CheckedContinuation`, and short-circuits when the status is already decided) and `MockLocationPermission` (`@Observable`, returns a preset decision and counts calls). `ProfileSetupViewModel` depends on the protocol, so tests inject the mock and assert both the stored decision and that location was requested exactly once. The app injects `CLLocationPermission`. Added `INFOPLIST_KEY_NSLocationWhenInUseUsageDescription` to the app target so the system prompt doesn't crash at runtime. The decision is deliberately coarse (`granted`/`denied`) — Profile Setup only cares whether it may use location going forward, not the exact `CLAuthorizationStatus`.
+
+### Alternatives Considered
+- **Call `CLLocationManager` directly from the view model:** rejected — untestable without a simulator + delegate plumbing, and it would drag the whole location capability into an auth-flow task.
+- **Build the full `LocationService` (coordinate reads + timeout) now:** rejected — that's Task 14's scope; Task 7 needs only the permission ask. Building it early would be speculative and untested against its real use.
+- **Expose the raw `CLAuthorizationStatus`:** rejected — Profile Setup makes a binary decision (proceed regardless, record whether location is usable). The coarse enum keeps the view model simple; Task 14 can read finer status directly if it needs to.
+
+### Consequences
+- The view model's location step is fully unit-tested (granted stored as true, denied stored as false but still completes, not requested when the name is invalid) with no simulator UI.
+- A denied/failed permission never blocks setup — location is optional, matching the app's "silently omit location" stance (l3-ios-app.md §7).
+- **Revisit when:** Task 14 builds the real `LocationService`; it may absorb `CLLocationPermission` or share the manager, and it will need coordinate reads + the 10s timeout that this permission-only abstraction intentionally omits.
+
+## ADR-0085: Profile Setup is gated in `RootView` by a session-local `didCompleteSetup` flag; the view model owns no persisted profile state
+
+Status: Accepted (revisit)
+Date: 2026-07-23
+
+### Context
+Profile Setup is shown "on first login only" (tasks-ios.md Task 7, l3-ios-app.md §4 "First Launch"): Login → Profile Setup → Home. `RootView` already gates Login vs the tab bar on `authRepository.isAuthenticated` (ADR-0083). We now need a third state between them, and a way to know when setup is "done." A real backend would persist a "profile complete" flag on the user; the MVP is mock-only, and the mock user is pre-populated, so there's no server signal to key off yet.
+
+### Decision
+`RootView` becomes a three-way gate: not authenticated → `LoginView`; authenticated but `!didCompleteSetup` → `ProfileSetupView`; otherwise → `ContentView`. `didCompleteSetup` is a `@State Bool` local to `RootView` for the session. `ProfileSetupView` takes an `onComplete` closure and calls it via `.onChange(of: model.isComplete)`; `RootView`'s callback flips the flag. `ProfileSetupViewModel` (`@MainActor @Observable`) holds only screen-local state (`displayName`, `avatarData`, `isSaving`, `errorMessage`, `isComplete`, `locationPermissionGranted`) and delegates the actual save to the injected `UserRepository` — it does **not** own the persisted profile, consistent with the state-ownership rule (ADR-0083, l3-ios-app.md §1). `continueSetup()` validates the name (1–30 chars, trimmed), saves name + optional avatar through the repository, requests location, then flips `isComplete`; an invalid name aborts before any repository/permission call.
+
+### Alternatives Considered
+- **Persist "setup complete" on the user model / repository:** rejected for now — there's no backend, and the mock user is pre-seeded. A session-local flag is the minimal thing that produces the correct first-login → Home flow; the real signal arrives with the backend.
+- **Make Profile Setup a pushed screen inside a `NavigationStack` after Login:** rejected — the same declarative-gate approach as ADR-0083 keeps all top-level routing in one `RootView` `body`, with no imperative navigation and no stack to pop.
+- **Let the view model expose completion and have the app observe it directly:** rejected — the view model is created *inside* `ProfileSetupView` (like `LoginViewModel` inside `LoginView`), so `RootView` doesn't hold it. A one-shot `onComplete` callback hands the single event up without leaking the model or duplicating its state.
+
+### Consequences
+- First-login routing is declarative and lives entirely in `RootView`; adding the step didn't touch Login or the tab bar.
+- `PintKingApp` now owns four session objects (`auth`, `group`, `user` repositories + `CLLocationPermission`) and injects them down.
+- Because `didCompleteSetup` is session-local, every fresh launch currently re-shows setup (the mock has no persisted "done" flag). That's acceptable for mock-only development and is the natural seam for the backend's real flag.
+- **Revisit when:** the backend lands — "profile complete" should come from the user record (e.g. a first-login / onboarding flag), replacing the session-local `@State`; and when the deep-link invite flow (Task 28) needs to run *after* setup for an unauthenticated user, `RootView` is where that ordering is coordinated.
