@@ -32,3 +32,10 @@ enum GroupMemberRole: String, Codable, CaseIterable, Sendable {
     case admin
     case member
 }
+
+/// Map scope toggle: only my own pints, or everyone in the group. Raw values
+/// match the map endpoint's `?scope=` query parameter (l3-api.md §1, map).
+enum MapScope: String, Codable, CaseIterable, Sendable {
+    case personal
+    case group
+}
