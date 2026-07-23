@@ -113,6 +113,10 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0077 | Repository protocols are `@MainActor` class-bound with `async throws` methods | Accepted (revisit) |
 | 0078 | Mock repositories are stateful `@Observable` classes over one shared `MockData` fixture set | Accepted (revisit) |
 | 0079 | `GroupDetail` composite and `MapScope` enum added for detail and map endpoints | Accepted (revisit) |
+| 0080 | `ImageValidator` detects format by magic bytes and throws, mirroring the API | Accepted (revisit) |
+| 0081 | `InitialsGenerator` splits on whitespace, keeps grapheme clusters whole, and never returns empty | Accepted (revisit) |
+| 0082 | The "+" tab is a trigger routed through a `RootTabViewModel`, not a selectable tab | Accepted (revisit) |
+| 0083 | Root view gates Login vs tab bar by observing the auth repository; LoginViewModel maps errors, owns no auth state | Accepted (revisit) |
 
 ---
 
@@ -1999,3 +2003,27 @@ Introduce `RootTab { home, add, profile }` and a `@MainActor @Observable RootTab
 - The disabled state is one derived property (`canLogPint`) reading the group repository's shared `activeGroup`, so it stays correct as the active group changes.
 - The whole shell's behaviour is covered by fast, view-free unit tests; the SwiftUI layer is a thin declarative binding.
 - **Revisit when:** the camera needs the active group threaded into it (Task 11–13), or if we move to a center floating action button design; the view model already knows `canLogPint`, so the modal can read the active group at presentation time.
+
+## ADR-0083: Root view gates Login vs tab bar by observing the auth repository; `LoginViewModel` maps errors and owns no auth state
+
+Status: Accepted (revisit)
+Date: 2026-07-23
+
+### Context
+Task 6 wires the auth flow: an unauthenticated user sees `LoginView`, and a successful (mock) Sign in with Apple must swap the whole screen for the tab bar (`ContentView`). On failure the Login screen shows a human-readable message with a Retry button (l3-ios-app.md §4, §7). Two questions: (1) where does the "am I signed in?" decision live, and (2) does the login view model hold auth state or delegate it? The `AuthRepository` is already the single source of truth for `isAuthenticated` and `currentUser` (l3-ios-app.md §1, State Ownership), and `MockAuthRepository` is an `@Observable` class with a `shouldFailLogin` switch.
+
+### Decision
+Add a `RootView` in `App/` that reads `authRepository.isAuthenticated` and renders `ContentView` when true, `LoginView` when false. Because the repository is `@Observable` and `RootView` reads that property in its `body`, flipping it (login succeeds, or a later logout/delete-account) re-renders `RootView` and swaps the screen — no imperative navigation, no binding threaded down. `PintKingApp` owns both the `authRepository` and `groupRepository` as `@State` and injects them.
+
+`LoginViewModel` (`@MainActor @Observable`) holds only screen-local state — `isLoggingIn` and `errorMessage` — and delegates the actual sign-in to the injected repository. It does **not** expose `isAuthenticated`; the root view observes the repository directly, so duplicating that state in the view model would just risk drift. `login()` clears the prior error, sets the loading flag (with `defer` to reset it), calls `authRepository.login()`, and on `catch` maps the thrown error to a message via a private `message(for:)` helper. `retry()` is a thin alias for `login()` (which already clears the error first) named for readability at the call site.
+
+### Alternatives Considered
+- **`LoginViewModel` owns `isAuthenticated` and the app switches on the view model:** rejected — the repository is already the single source of truth for auth state; mirroring it in the view model invites drift and means logout/delete-account (which happen far from the Login screen) can't flip the flag.
+- **Passing an `isAuthenticated` `Binding` down from the app:** rejected — `@Observable` makes the binding unnecessary; reading the property in `body` is enough to subscribe, and it keeps the ownership in one place.
+- **Surfacing the raw `Error`/`APIError` description on the Login screen:** rejected — the user needs a human-readable line, not `serverError`. The view model maps known cases (e.g. `.networkUnavailable` → an offline hint) and falls back to a generic "Sign in failed. Please try again." for everything else.
+
+### Consequences
+- Auth-driven navigation is declarative and centralised: any code path that changes `isAuthenticated` on the repository automatically routes the user, so logout (Task 18) and 401-refresh-failure (Task 26) get correct navigation for free.
+- The Login logic is fully unit-testable without SwiftUI (`LoginViewModelTests` drives success, failure, and retry via `shouldFailLogin`); the view is a thin renderer of `isLoggingIn`/`errorMessage`.
+- The Sign in with Apple button is styled but not yet wired to `AuthenticationServices`; the real `ASAuthorizationController` flow lands with the backend (Task 26), at which point `message(for:)` gains real Apple-error cases.
+- **Revisit when:** the real Apple flow lands (Task 26) — error mapping will need concrete `ASAuthorizationError` cases; and when the deep-link invite flow (Task 28) needs to persist a code through the unauthenticated → authenticated transition, which this root gate is the natural place to coordinate.
