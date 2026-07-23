@@ -119,6 +119,7 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0083 | Root view gates Login vs tab bar by observing the auth repository; LoginViewModel maps errors, owns no auth state | Accepted (revisit) |
 | 0084 | Location permission behind a `LocationPermissionRequesting` protocol (real CLLocationManager + mock); full LocationService deferred | Accepted (revisit) |
 | 0085 | Profile Setup gated in `RootView` by a session-local `didCompleteSetup` flag; view model owns no persisted profile state | Accepted (revisit) |
+| 0086 | Group switcher reads Active_Group live from the repository (shared state), caching only the fetched group list | Accepted (revisit) |
 
 ---
 
@@ -2072,3 +2073,25 @@ Profile Setup is shown "on first login only" (tasks-ios.md Task 7, l3-ios-app.md
 - `PintKingApp` now owns four session objects (`auth`, `group`, `user` repositories + `CLLocationPermission`) and injects them down.
 - Because `didCompleteSetup` is session-local, every fresh launch currently re-shows setup (the mock has no persisted "done" flag). That's acceptable for mock-only development and is the natural seam for the backend's real flag.
 - **Revisit when:** the backend lands — "profile complete" should come from the user record (e.g. a first-login / onboarding flag), replacing the session-local `@State`; and when the deep-link invite flow (Task 28) needs to run *after* setup for an unauthenticated user, `RootView` is where that ordering is coordinated.
+
+## ADR-0086: The group switcher reads Active_Group live from the repository, caching only the fetched group list
+
+Status: Accepted (revisit)
+Date: 2026-07-23
+
+### Context
+The Home tab's group switcher (tasks-ios.md Task 8, l3-ios-app.md §"Home Tab") shows the Active_Group's name and, on tap, a menu of every group the user belongs to; picking one switches the active group. Two pieces of data back it: the *list* of the user's groups (an async fetch, `getGroups()`) and the *current* Active_Group. The Active_Group is shared state that already lives on the `GroupRepository` (l3-ios-app.md §1 "State Ownership"): the "+" button reads it (ADR-0082), and create/join/leave elsewhere mutate it. The open question was whether the switcher's view model should cache the active group locally or read it through the repository.
+
+### Decision
+`GroupSwitcherViewModel` (`@MainActor @Observable`) caches only `groups` (the fetched list, screen-local) and exposes `activeGroup`/`activeGroupName` as computed properties that read **straight through** `groupRepository.activeGroup`. `load()` fetches the list (failures fall back to empty, surfacing the empty state — no error affordance until the networking layer, Task 26). `select(_:)` delegates to `switchActiveGroup(groupId:)` and is a no-op when the tapped group is already active. Because both the repository and the view model are `@Observable`, a switch from any screen re-renders the label with no manual wiring. The view (`GroupSwitcherView`) is a thin renderer: a `Menu` with a checkmark on the active group, or an empty state ("Join or create a group to get started") with Create/Join buttons wired to `onCreate`/`onJoin` closures (real navigation lands in Tasks 20–21).
+
+### Alternatives Considered
+- **Cache the active group in the view model** (mirror it on `load`/`select`): rejected — it would go stale the moment create/join/leave changes the active group from another screen, and duplicates state that already has a single owner. Reading through the repository keeps one source of truth, consistent with `RootTabViewModel.canLogPint` (ADR-0082).
+- **A shared `HomeViewModel` owning switcher + leaderboard state:** rejected as premature — the switcher is self-contained; the leaderboard (Task 9) gets its own view model. They coordinate only through the shared Active_Group on the repository.
+- **Hide the switcher entirely when the user has no groups:** rejected — the empty state is the intended first-run affordance (create/join), so the switcher renders it in place rather than vanishing.
+
+### Consequences
+- The switcher label is always correct without observing anything but the repository; create/join/leave "just work" for free.
+- The view model is trivially unit-testable without SwiftUI: `select(_:)` is asserted by reading `repository.activeGroup` back, and the empty state by the `hasGroups`/`activeGroupName` computed properties (6 `GroupSwitcherViewModelTests` cases).
+- Create/Join are inert closures for now; the empty-state buttons don't navigate until Tasks 20–21 provide the destinations.
+- **Revisit when:** the leaderboard (Task 9) lands next to the switcher on Home and we decide whether they share a container view model or stay separate; and when the networking layer (Task 26) replaces the silent `try?` fetch with a real loading/error path.
