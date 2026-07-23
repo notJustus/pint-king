@@ -9,14 +9,19 @@ import SwiftUI
 
 @main
 struct PintKingApp: App {
-    // The single group repository for the session. Mock until backend
-    // integration (Task 26); ContentView reads its active group to decide
+    // The session repositories. Mock until backend integration (Task 26).
+    // RootView observes `authRepository.isAuthenticated` to gate Login vs the
+    // tab bar; ContentView reads the group repository's active group to decide
     // whether "+" is enabled.
+    @State private var authRepository = MockAuthRepository()
     @State private var groupRepository = MockGroupRepository()
 
     var body: some Scene {
         WindowGroup {
-            ContentView(groupRepository: groupRepository)
+            RootView(
+                authRepository: authRepository,
+                groupRepository: groupRepository
+            )
         }
     }
 }
