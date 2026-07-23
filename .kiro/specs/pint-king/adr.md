@@ -1936,3 +1936,44 @@ Add `GroupDetail { group: Group; members: [GroupMember] }` (Codable, Identifiabl
 - `getGroupDetail` returns everything the detail screen needs in one value; the list stays lean.
 - `MapScope` follows the same "raw value = wire string" convention as `Period`/`DrinkType`, so the map request builds without a translation step.
 - **Revisit when:** the detail endpoint's payload grows fields beyond group + members (e.g. the caller's own role/permissions), at which point `GroupDetail` absorbs them.
+
+## ADR-0080: `ImageValidator` detects format by magic bytes and throws, mirroring the API
+
+Status: Accepted (revisit)
+Date: 2026-07-23
+
+### Context
+Task 4 needs the client-side image check that runs before an avatar or pint-photo upload (requirements §2.3, §4.7). It must reject anything that isn't a JPEG or PNG and anything over the per-asset limit (5 MB avatar, 10 MB pint photo). The server re-validates independently — the API's `ImageValidation` object sniffs the first few bytes (JPEG `FF D8 FF`, PNG `89 50 4E 47 0D 0A 1A 0A`) and checks size before format. The client check is a UX affordance (fail fast with an inline error), not a security boundary, so the question was how closely to track the server and what shape the result takes.
+
+### Decision
+`ImageValidator.validate(_:as:)` is a `throws` function (no return value on success) that reproduces the API's logic exactly: same magic-byte prefixes, same size limits expressed as `5 * 1024 * 1024` / `10 * 1024 * 1024`, and the same order — size first, then format. On failure it throws a typed `ImageValidationError` (`.tooLarge(maxBytes:)` carrying the limit, or `.unsupportedType`). The asset kind is an `ImageAsset` enum (`avatar` / `pintPhoto`) whose `maxBytes` owns the limit, so the limit lives in one place per asset.
+
+### Alternatives Considered
+- **Return `Result<Void, ImageValidationError>`:** rejected — `Result<Void, _>` isn't `Equatable` (because `Void` isn't), which made the tests unable to compare outcomes with `==`. A `throws` function composes with Swift Testing's `#expect(throws:)` and reads naturally at call sites (`try validate(...)`), so it was the cleaner choice.
+- **Trust the declared MIME/UTType instead of sniffing bytes:** rejected — the file bytes are what actually get uploaded and re-validated server-side; matching the server's byte sniff means the client and server agree on the same evidence, so a file that passes here passes there.
+- **A single global size limit:** rejected — avatar (5 MB) and pint photo (10 MB) genuinely differ; encoding the limit on `ImageAsset` keeps the two caps explicit and lets the same bytes be valid as one asset but not the other.
+
+### Consequences
+- Client and server apply the identical accept/reject rule, so client-validated uploads won't be surprised by a 422; the client check purely improves latency-to-feedback.
+- `.tooLarge` carries `maxBytes`, so the UI can render "must be 5 MB or smaller" without hard-coding the number.
+- **Revisit when:** we add HEIC→JPEG conversion (Task 11/16) — validation runs *after* conversion, so the validator's input is always already-converted JPEG data; if conversion ever produces something else, the magic-byte set may need to grow.
+
+## ADR-0081: `InitialsGenerator` splits on whitespace, keeps grapheme clusters whole, and never returns empty
+
+Status: Accepted (revisit)
+Date: 2026-07-23
+
+### Context
+Design Property 7 requires initials for the no-avatar placeholder (leaderboard rows, map pins — requirements §1.7, §7.5): the first character of the first word plus the first character of the last word (or just the first for a single word), never empty. Display names are free-form user input — they can be single words, multi-word, empty, whitespace-only, or contain emoji/accented glyphs made of multiple Unicode scalars.
+
+### Decision
+`InitialsGenerator.initials(from:)` splits the name on whitespace (`split(whereSeparator: \.isWhitespace)`, which discards empty subsequences so runs of spaces collapse), takes `Character` values (whole grapheme clusters) from the first and last words, uppercases the result, and returns a `"?"` placeholder when there are no non-whitespace words. Taking `Character` rather than `UnicodeScalar` keeps flag emoji and combining accents intact.
+
+### Alternatives Considered
+- **Index into the string by `UnicodeScalar` / UTF-16 offset:** rejected — that can slice a multi-scalar grapheme (e.g. a flag emoji) into a broken half. Swift's `Character` is already a grapheme cluster, so `word.first` is the correct unit.
+- **Return an empty string for empty input and let callers handle it:** rejected — Property 7 says the result is *never* empty, and every call site would otherwise need the same fallback. Centralising the `"?"` placeholder honours the property in one place.
+
+### Consequences
+- Every display name — including empty, whitespace-only, or emoji names — yields a renderable 1–2 character string, so placeholder views never show a blank.
+- The helper is pure and synchronous, trivially unit-tested, and has no dependency on the rest of the app.
+- **Revisit when:** product wants locale-aware casing or right-to-left handling; `uppercased()` uses the default locale, which is fine for the MVP but not necessarily for every script.
