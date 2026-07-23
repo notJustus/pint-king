@@ -110,6 +110,9 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0074 | Multi-stage Dockerfile; prod profile fails fast on missing env vars | Accepted (revisit) |
 | 0075 | Keep empty feature folders with `.gitkeep`, excluded from the build via a sync-group membership exception | Accepted (revisit) |
 | 0076 | iOS domain models double as API DTOs, decoded through one shared camelCase/ISO-8601 coder | Accepted (revisit) |
+| 0077 | Repository protocols are `@MainActor` class-bound with `async throws` methods | Accepted (revisit) |
+| 0078 | Mock repositories are stateful `@Observable` classes over one shared `MockData` fixture set | Accepted (revisit) |
+| 0079 | `GroupDetail` composite and `MapScope` enum added for detail and map endpoints | Accepted (revisit) |
 
 ---
 
@@ -1861,3 +1864,75 @@ Use the Codable domain structs **directly as the API DTOs** — no separate DTO-
 - The models are coupled to the API's serialization conventions. A change on the API side (e.g. switching to snake_case, or adding fractional-second timestamps) requires a coordinated change here — but it's localised to `JSONCoding` (format) and the affected struct (fields).
 - Structs are `Equatable` + `Sendable` (Swift 6 concurrency-safe value types) and `Identifiable` where a natural id exists (`LeaderboardEntry.id` is a computed `userId`).
 - **Revisit when:** the client's needs diverge from the API payloads enough to justify a real DTO/mapping layer, or the API changes its casing/date conventions.
+
+---
+
+## ADR-0077: Repository protocols are `@MainActor` class-bound with `async throws` methods
+
+Status: Accepted (revisit)
+Date: 2026-07-23
+
+### Context
+Task 3 defines the six repository protocols (`Auth`, `User`, `Group`, `Pint`, `Leaderboard`, `Map`). Two shapes had to be fixed now because everything downstream (mocks this task, ViewModels from Task 5 on, the real `NetworkClient` in Task 26) depends on them: the actor isolation of the protocol, and the async/error signature of its methods. The repositories are the app's shared-state owners (l3-ios-app.md §1) — SwiftUI reads their observable properties (`isAuthenticated`, `activeGroup`) on the main actor, and every method will eventually perform network I/O that can fail.
+
+### Decision
+Every repository protocol is annotated `@MainActor` and constrained to `AnyObject` (class-bound). All data-access methods are `async throws`. Reads return the domain model directly (`getGroups() async throws -> [Group]`); mutations that the UI needs the result of are `@discardableResult` and return the updated model; pure state changes return `Void`. Shared observable state is exposed as `{ get }` protocol properties (`activeGroup`, `pendingPints`, `currentUser`, `isAuthenticated`) so a ViewModel can observe it without knowing the concrete type. Errors are thrown as `APIError` (ADR-0076's typed enum).
+
+### Alternatives Considered
+- **`Sendable` protocols with `nonisolated`/`actor` conformers:** the more "concurrency-pure" route. Rejected for MVP — the repositories exist to feed SwiftUI, which is main-actor-bound; forcing everything through an actor hop would add `await` noise and Sendable-boxing for no benefit while all state lives on the main actor anyway. `@MainActor` matches how the state is actually consumed. Revisit if a repository needs to do heavy work off the main actor (then isolate just that work with a detached task, keeping the API main-actor).
+- **Synchronous methods returning cached values:** rejected — the real repositories fetch over the network; a synchronous signature would force a later breaking change to every call site. `async` from day one keeps the mock and the real implementation signature-identical.
+- **Returning `Result<T, APIError>` instead of `throws`:** rejected — `try await` composes better with Swift concurrency and SwiftUI's `.task`/`do-catch`, and avoids a wrapper type at every call site.
+- **Struct-based protocols (value-type repositories):** rejected — repositories hold mutable shared state and must be reference-observed by multiple views; `AnyObject` + `@Observable` class is the right tool.
+
+### Consequences
+- Mocks and the real `NetworkClient`-backed repositories are drop-in interchangeable: identical signatures, so swapping them at the composition root (Task 26) touches no ViewModel.
+- ViewModels can be written and tested now against the protocols with mocks injected, exactly as the tests in this task do (variables typed as the protocol, not the concrete mock).
+- `@MainActor` on the protocol means conformers are implicitly main-actor; the mocks don't need their own annotation for isolation but carry `@MainActor` explicitly for clarity.
+- **Revisit when:** a repository needs genuine off-main-actor concurrency, or the error surface needs richer payloads than `APIError`'s cases.
+
+---
+
+## ADR-0078: Mock repositories are stateful `@Observable` classes over one shared `MockData` fixture set
+
+Status: Accepted (revisit)
+Date: 2026-07-23
+
+### Context
+Task 3 requires mock implementations returning "realistic hardcoded data (2–3 groups, 5–8 members, 10–20 pint logs)" so the entire UI can be built before the backend is wired in. Two questions: where the fixture data lives, and whether the mocks are inert (always return the same constants) or stateful (reflect mutations like joining a group or deleting a pint). The UI flows they must support — switch active group, create/join/leave group, edit/delete pint, promote member — are inherently stateful; an inert mock would make those screens untestable and unusable in previews.
+
+### Decision
+A single `enum MockData` namespace holds all fixtures as `static let`s, keyed by shared stable `UUID` constants (`daveId`, `fridayId`, …) so a leaderboard entry's `userId`, a group member's `userId`, and a pint's `userId` all line up for the same person. Every `Mock*Repository` is a `@MainActor @Observable final class` that seeds itself from `MockData` and then keeps its **own mutable copy** of anything the app can change (group list, per-group members, active group, pint store). Mutations persist for the session and are observable. Fixtures are dated relative to a fixed `MockData.now` (2026-07-01T12:00:00Z), not the wall clock, so time-dependent behaviour (the 24h pint-delete window) is deterministic across runs. `MockAuthRepository` exposes a `shouldFailLogin` flag so the Login error path (Task 6) is drivable without a backend. Leaderboards are **curated arrays**, independent of the pint store, mirroring that the real leaderboard is computed server-side rather than from the pints the client holds — and are deliberately seeded with a rank-1 tie (two crowns), a dense-ranked tie lower down, and a former member (unranked, own section) to exercise the leaderboard UI's edge cases.
+
+### Alternatives Considered
+- **Inert mocks returning constants:** simplest, but can't represent state changes; the group-switcher, join/leave, and edit/delete screens would have nothing to react to. Rejected — the point of the mocks is to build those flows.
+- **Per-repository private fixtures:** rejected — IDs wouldn't line up across domains, so a leaderboard row couldn't navigate to the right member's pints. One shared `MockData` keeps the graph consistent.
+- **Deriving the leaderboard from the mock pint store:** rejected — couples two fixtures that are independent in production (the API computes ranks with snapshots/deltas the client never recomputes) and would make it hard to stage specific ranking edge cases. Curated boards are clearer and match reality.
+- **Using `Date()` for fixture timestamps:** rejected — the 24h delete-window test would flip behaviour depending on when it runs. A fixed `now` keeps fixtures and tests deterministic (and mirrors the workflow-script rule against wall-clock reads).
+
+### Consequences
+- The whole UI can be built and demoed on mock data with realistic, internally-consistent state, and previews/tests can inject a fresh mock per case (fixtures are re-seeded on `init`, so tests don't leak state into each other).
+- The mocks encode a little join/leave/fallback logic (e.g. leaving the active group falls back to the most recently created remaining group). This is UI-plausibility logic only; the authoritative rules live server-side, so the mock logic is intentionally shallow and may diverge from the API in edge cases.
+- Swapping a mock for the real repository (Task 26) is a one-line change at the composition root; the shared `MockData` and any mock-only flags (`shouldFailLogin`) simply fall away.
+- **Revisit when:** the real repositories land — the mocks stay for previews/tests but stop being the app's default wiring.
+
+---
+
+## ADR-0079: `GroupDetail` composite and `MapScope` enum added for the detail and map endpoints
+
+Status: Accepted (revisit)
+Date: 2026-07-23
+
+### Context
+Task 2 defined the core domain models, but the Task 3 protocols surfaced two shapes the app needs that weren't yet modelled. `GET /groups/{id}` returns a group **with its member list** (the Group Detail screen, Task 22), which is a richer shape than the bare `Group` that `GET /groups` returns for the group list. And the map endpoint takes a `?scope=personal|group` parameter (l3-api.md §1, Map) with no corresponding Swift type.
+
+### Decision
+Add `GroupDetail { group: Group; members: [GroupMember] }` (Codable, Identifiable by `group.id`) as the return type of `getGroupDetail`, keeping the bare `Group` as the list shape — two types for the two endpoints rather than one over-fetched type. Add `enum MapScope: String { case personal, group }` with raw values matching the `?scope=` query parameter, alongside the existing `Period` and `DrinkType` wire-string enums in `Enums.swift`.
+
+### Alternatives Considered
+- **Put `members` directly on `Group` (optional):** rejected — the group-list response doesn't carry members, so the field would be `nil` there and present only after a detail fetch, an ambiguous shape. Two explicit types make "list vs detail" unmissable and match the two endpoints 1:1 (consistent with ADR-0076's "models mirror the endpoint payloads").
+- **A `Bool isPersonal` instead of `MapScope`:** rejected — the enum's raw value *is* the query-parameter string, so the networking layer (Task 26) can serialise it directly, and it reads better at call sites (`scope: .group`).
+
+### Consequences
+- `getGroupDetail` returns everything the detail screen needs in one value; the list stays lean.
+- `MapScope` follows the same "raw value = wire string" convention as `Period`/`DrinkType`, so the map request builds without a translation step.
+- **Revisit when:** the detail endpoint's payload grows fields beyond group + members (e.g. the caller's own role/permissions), at which point `GroupDetail` absorbs them.
