@@ -20,6 +20,7 @@ struct RootView: View {
     private let authRepository: any AuthRepositoryProtocol
     private let groupRepository: any GroupRepositoryProtocol
     private let userRepository: any UserRepositoryProtocol
+    private let leaderboardRepository: any LeaderboardRepositoryProtocol
     private let locationPermission: any LocationPermissionRequesting
 
     /// Whether the first-login Profile Setup step is done for this session. The
@@ -30,11 +31,13 @@ struct RootView: View {
         authRepository: any AuthRepositoryProtocol,
         groupRepository: any GroupRepositoryProtocol,
         userRepository: any UserRepositoryProtocol,
+        leaderboardRepository: any LeaderboardRepositoryProtocol,
         locationPermission: any LocationPermissionRequesting
     ) {
         self.authRepository = authRepository
         self.groupRepository = groupRepository
         self.userRepository = userRepository
+        self.leaderboardRepository = leaderboardRepository
         self.locationPermission = locationPermission
     }
 
@@ -49,7 +52,10 @@ struct RootView: View {
                 onComplete: { didCompleteSetup = true }
             )
         } else {
-            ContentView(groupRepository: groupRepository)
+            ContentView(
+                groupRepository: groupRepository,
+                leaderboardRepository: leaderboardRepository
+            )
         }
     }
 }
@@ -59,6 +65,7 @@ struct RootView: View {
         authRepository: MockAuthRepository(),
         groupRepository: MockGroupRepository(),
         userRepository: MockUserRepository(),
+        leaderboardRepository: MockLeaderboardRepository(),
         locationPermission: MockLocationPermission()
     )
 }
@@ -68,6 +75,7 @@ struct RootView: View {
         authRepository: MockAuthRepository(authenticated: true),
         groupRepository: MockGroupRepository(),
         userRepository: MockUserRepository(),
+        leaderboardRepository: MockLeaderboardRepository(),
         locationPermission: MockLocationPermission()
     )
 }

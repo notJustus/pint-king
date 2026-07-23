@@ -14,16 +14,24 @@ import SwiftUI
 struct ContentView: View {
     @State private var model: RootTabViewModel
 
-    init(groupRepository: any GroupRepositoryProtocol) {
+    private let groupRepository: any GroupRepositoryProtocol
+    private let leaderboardRepository: any LeaderboardRepositoryProtocol
+
+    init(
+        groupRepository: any GroupRepositoryProtocol,
+        leaderboardRepository: any LeaderboardRepositoryProtocol
+    ) {
+        self.groupRepository = groupRepository
+        self.leaderboardRepository = leaderboardRepository
         _model = State(initialValue: RootTabViewModel(groupRepository: groupRepository))
     }
 
     var body: some View {
         TabView(selection: tabSelection) {
-            NavigationStack {
-                Text("Leaderboard")
-                    .navigationTitle("Home")
-            }
+            HomeView(
+                groupRepository: groupRepository,
+                leaderboardRepository: leaderboardRepository
+            )
             .tabItem { Label("Home", systemImage: "trophy") }
             .tag(RootTab.home)
 
@@ -81,5 +89,8 @@ private struct CameraPlaceholderView: View {
 }
 
 #Preview {
-    ContentView(groupRepository: MockGroupRepository())
+    ContentView(
+        groupRepository: MockGroupRepository(),
+        leaderboardRepository: MockLeaderboardRepository()
+    )
 }
