@@ -1977,3 +1977,25 @@ Design Property 7 requires initials for the no-avatar placeholder (leaderboard r
 - Every display name — including empty, whitespace-only, or emoji names — yields a renderable 1–2 character string, so placeholder views never show a blank.
 - The helper is pure and synchronous, trivially unit-tested, and has no dependency on the rest of the app.
 - **Revisit when:** product wants locale-aware casing or right-to-left handling; `uppercased()` uses the default locale, which is fine for the MVP but not necessarily for every script.
+
+## ADR-0082: The "+" tab is a trigger routed through a `RootTabViewModel`, not a selectable tab
+
+Status: Accepted (revisit)
+Date: 2026-07-23
+
+### Context
+The nav shell (l3-ios-app.md §2) is a three-item bottom bar — Home, "+", Profile — but the "+" is not a destination: tapping it presents the camera as a full-screen modal, and dismissing the modal must return the user to whichever tab they were on. SwiftUI's `TabView` binds its selection to a value, and a naive third tag would make "+" a *selectable* tab (its content would show, and dismissing the modal would strand the user on a blank "+" tab). The "+" must also be disabled (greyed out, not hidden — §5 point 5) when the user has no active group. Task 5 needs all of this branching to be unit-testable without driving the SwiftUI UI on the simulator.
+
+### Decision
+Introduce `RootTab { home, add, profile }` and a `@MainActor @Observable RootTabViewModel` that owns `selectedTab` (never `.add`), `isCameraPresented`, and `canLogPint` (derived from `groupRepository.activeGroup != nil`). `ContentView` binds `TabView`'s selection to a **custom `Binding`** whose setter calls `model.select($0)` — so a "+" tap runs `select(.add)`, which sets `isCameraPresented = true` (when `canLogPint`) and leaves `selectedTab` untouched. The getter still returns the real home/profile selection, so the visible tab never becomes "+". The camera is presented via `.fullScreenCover(isPresented:)`; its close button flips `isCameraPresented` back to false, returning to `selectedTab`. All routing lives in the view model and is tested directly (`RootTabViewModelTests`), never through the view.
+
+### Alternatives Considered
+- **A plain `@State selectedTab` in the view with an `.onChange` that snaps back:** rejected — the tab briefly becomes `.add`, causing a visible flicker and putting the "did we open the camera?" logic in the view where it can't be unit-tested.
+- **A center floating button overlaid on the `TabView` instead of a real tab item:** rejected for now — more layout code, and the design explicitly describes a three-item bar with "+" in the middle. The trigger-binding approach keeps the standard tab-bar look with no custom chrome.
+- **Hiding "+" when there's no active group:** rejected per §5 point 5 — the button always exists to avoid "why is the button gone?" confusion; it's disabled instead.
+
+### Consequences
+- Dismissing the camera always returns to the prior tab because that tab was never deselected.
+- The disabled state is one derived property (`canLogPint`) reading the group repository's shared `activeGroup`, so it stays correct as the active group changes.
+- The whole shell's behaviour is covered by fast, view-free unit tests; the SwiftUI layer is a thin declarative binding.
+- **Revisit when:** the camera needs the active group threaded into it (Task 11–13), or if we move to a center floating action button design; the view model already knows `canLogPint`, so the modal can read the active group at presentation time.
