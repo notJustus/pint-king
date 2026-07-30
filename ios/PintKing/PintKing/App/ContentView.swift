@@ -55,7 +55,16 @@ struct ContentView: View {
             .tag(RootTab.profile)
         }
         .fullScreenCover(isPresented: $model.isCameraPresented) {
-            CameraPlaceholderView { model.isCameraPresented = false }
+            // A fresh camera stack per presentation: the CameraModel owns an
+            // AVCaptureSession we want built up on open and torn down on close, so
+            // it's created here (not held for the app's lifetime). The post-capture
+            // sheet + repository hand-off land in Task 13.
+            CameraView(
+                camera: CameraModel(),
+                permission: AVCameraPermission()
+            ) {
+                model.isCameraPresented = false
+            }
         }
     }
 
@@ -67,28 +76,6 @@ struct ContentView: View {
             get: { model.selectedTab },
             set: { model.select($0) }
         )
-    }
-}
-
-/// Stand-in for the camera modal (Tasks 11–13). A blank full-screen view with a
-/// close button that dismisses back to the previously selected tab.
-private struct CameraPlaceholderView: View {
-    let onClose: () -> Void
-
-    var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
-            Text("Camera")
-                .foregroundStyle(.white)
-        }
-        .overlay(alignment: .topLeading) {
-            Button(action: onClose) {
-                Image(systemName: "xmark")
-                    .font(.title2)
-                    .foregroundStyle(.white)
-                    .padding()
-            }
-        }
     }
 }
 
