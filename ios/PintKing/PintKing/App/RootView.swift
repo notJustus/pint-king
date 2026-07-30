@@ -21,6 +21,7 @@ struct RootView: View {
     private let groupRepository: any GroupRepositoryProtocol
     private let userRepository: any UserRepositoryProtocol
     private let leaderboardRepository: any LeaderboardRepositoryProtocol
+    private let pintRepository: any PintRepositoryProtocol
     private let locationPermission: any LocationPermissionRequesting
 
     /// Whether the first-login Profile Setup step is done for this session. The
@@ -32,12 +33,14 @@ struct RootView: View {
         groupRepository: any GroupRepositoryProtocol,
         userRepository: any UserRepositoryProtocol,
         leaderboardRepository: any LeaderboardRepositoryProtocol,
+        pintRepository: any PintRepositoryProtocol,
         locationPermission: any LocationPermissionRequesting
     ) {
         self.authRepository = authRepository
         self.groupRepository = groupRepository
         self.userRepository = userRepository
         self.leaderboardRepository = leaderboardRepository
+        self.pintRepository = pintRepository
         self.locationPermission = locationPermission
     }
 
@@ -54,7 +57,8 @@ struct RootView: View {
         } else {
             ContentView(
                 groupRepository: groupRepository,
-                leaderboardRepository: leaderboardRepository
+                leaderboardRepository: leaderboardRepository,
+                pintRepository: pintRepository
             )
         }
     }
@@ -66,6 +70,7 @@ struct RootView: View {
         groupRepository: MockGroupRepository(),
         userRepository: MockUserRepository(),
         leaderboardRepository: MockLeaderboardRepository(),
+        pintRepository: MockPintRepository(),
         locationPermission: MockLocationPermission()
     )
 }
@@ -76,6 +81,7 @@ struct RootView: View {
         groupRepository: MockGroupRepository(),
         userRepository: MockUserRepository(),
         leaderboardRepository: MockLeaderboardRepository(),
+        pintRepository: MockPintRepository(),
         locationPermission: MockLocationPermission()
     )
 }

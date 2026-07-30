@@ -16,13 +16,16 @@ struct ContentView: View {
 
     private let groupRepository: any GroupRepositoryProtocol
     private let leaderboardRepository: any LeaderboardRepositoryProtocol
+    private let pintRepository: any PintRepositoryProtocol
 
     init(
         groupRepository: any GroupRepositoryProtocol,
-        leaderboardRepository: any LeaderboardRepositoryProtocol
+        leaderboardRepository: any LeaderboardRepositoryProtocol,
+        pintRepository: any PintRepositoryProtocol
     ) {
         self.groupRepository = groupRepository
         self.leaderboardRepository = leaderboardRepository
+        self.pintRepository = pintRepository
         _model = State(initialValue: RootTabViewModel(groupRepository: groupRepository))
     }
 
@@ -30,7 +33,8 @@ struct ContentView: View {
         TabView(selection: tabSelection) {
             HomeView(
                 groupRepository: groupRepository,
-                leaderboardRepository: leaderboardRepository
+                leaderboardRepository: leaderboardRepository,
+                pintRepository: pintRepository
             )
             .tabItem { Label("Home", systemImage: "trophy") }
             .tag(RootTab.home)
@@ -91,6 +95,7 @@ private struct CameraPlaceholderView: View {
 #Preview {
     ContentView(
         groupRepository: MockGroupRepository(),
-        leaderboardRepository: MockLeaderboardRepository()
+        leaderboardRepository: MockLeaderboardRepository(),
+        pintRepository: MockPintRepository()
     )
 }

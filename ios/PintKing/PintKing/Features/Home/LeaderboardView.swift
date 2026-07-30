@@ -18,10 +18,19 @@ import SwiftUI
 struct LeaderboardView: View {
     @State private var model: LeaderboardViewModel
 
+    /// Held so the row → Member Pint History navigation can build the destination
+    /// screen. The leaderboard reads the active group live; the history screen
+    /// does the same, so only the tapped member (id + name) needs threading.
+    private let groupRepository: any GroupRepositoryProtocol
+    private let pintRepository: any PintRepositoryProtocol
+
     init(
         groupRepository: any GroupRepositoryProtocol,
-        leaderboardRepository: any LeaderboardRepositoryProtocol
+        leaderboardRepository: any LeaderboardRepositoryProtocol,
+        pintRepository: any PintRepositoryProtocol
     ) {
+        self.groupRepository = groupRepository
+        self.pintRepository = pintRepository
         _model = State(initialValue: LeaderboardViewModel(
             groupRepository: groupRepository,
             leaderboardRepository: leaderboardRepository
@@ -70,23 +79,47 @@ struct LeaderboardView: View {
         List {
             Section {
                 ForEach(model.activeMembers) { entry in
-                    LeaderboardRow(entry: entry,
-                                   crowned: model.isCrowned(entry),
-                                   showsDelta: model.showsRankDelta)
+                    memberLink(entry) {
+                        LeaderboardRow(entry: entry,
+                                       crowned: model.isCrowned(entry),
+                                       showsDelta: model.showsRankDelta)
+                    }
                 }
             }
 
             if model.hasFormerMembers {
                 Section("Former Members") {
                     ForEach(model.formerMembers) { entry in
-                        LeaderboardRow(entry: entry, crowned: false, showsDelta: false)
-                            .foregroundStyle(.secondary)   // greyed out
+                        memberLink(entry) {
+                            LeaderboardRow(entry: entry, crowned: false, showsDelta: false)
+                                .foregroundStyle(.secondary)   // greyed out
+                        }
                     }
                 }
             }
         }
         .listStyle(.plain)
         .refreshable { await model.refresh() }
+        .navigationDestination(for: MemberRoute.self) { route in
+            MemberPintHistoryView(
+                userId: route.userId,
+                memberName: route.name,
+                groupRepository: groupRepository,
+                pintRepository: pintRepository
+            )
+        }
+    }
+
+    /// Wraps a row in a `NavigationLink` to that member's pint history. The whole
+    /// row is the tap target; a lightweight `MemberRoute` (just the id + name the
+    /// destination needs) is the navigation value, keeping the route decoupled
+    /// from the leaderboard DTO.
+    private func memberLink<Content: View>(
+        _ entry: LeaderboardEntry,
+        @ViewBuilder label: () -> Content
+    ) -> some View {
+        NavigationLink(value: MemberRoute(userId: entry.userId, name: entry.displayName),
+                       label: label)
     }
 
     // MARK: - Empty & loading states
@@ -106,6 +139,14 @@ struct LeaderboardView: View {
         .listStyle(.plain)
         .disabled(true)
     }
+}
+
+/// The navigation value for a leaderboard row → Member Pint History. Only the
+/// tapped member's id (fetch key) and name (title) need threading — the history
+/// screen reads the active group live, just like the leaderboard.
+private struct MemberRoute: Hashable {
+    let userId: UUID
+    let name: String
 }
 
 // MARK: - Row
@@ -210,15 +251,21 @@ private struct SkeletonRow: View {
 }
 
 #Preview("Populated") {
-    LeaderboardView(
-        groupRepository: MockGroupRepository(),
-        leaderboardRepository: MockLeaderboardRepository()
-    )
+    NavigationStack {
+        LeaderboardView(
+            groupRepository: MockGroupRepository(),
+            leaderboardRepository: MockLeaderboardRepository(),
+            pintRepository: MockPintRepository()
+        )
+    }
 }
 
 #Preview("Empty") {
-    LeaderboardView(
-        groupRepository: MockGroupRepository(groups: [], activeGroupId: nil),
-        leaderboardRepository: MockLeaderboardRepository()
-    )
+    NavigationStack {
+        LeaderboardView(
+            groupRepository: MockGroupRepository(groups: [], activeGroupId: nil),
+            leaderboardRepository: MockLeaderboardRepository(),
+            pintRepository: MockPintRepository()
+        )
+    }
 }

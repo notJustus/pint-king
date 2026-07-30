@@ -16,13 +16,16 @@ import SwiftUI
 struct HomeView: View {
     private let groupRepository: any GroupRepositoryProtocol
     private let leaderboardRepository: any LeaderboardRepositoryProtocol
+    private let pintRepository: any PintRepositoryProtocol
 
     init(
         groupRepository: any GroupRepositoryProtocol,
-        leaderboardRepository: any LeaderboardRepositoryProtocol
+        leaderboardRepository: any LeaderboardRepositoryProtocol,
+        pintRepository: any PintRepositoryProtocol
     ) {
         self.groupRepository = groupRepository
         self.leaderboardRepository = leaderboardRepository
+        self.pintRepository = pintRepository
     }
 
     var body: some View {
@@ -35,7 +38,8 @@ struct HomeView: View {
             } else {
                 LeaderboardView(
                     groupRepository: groupRepository,
-                    leaderboardRepository: leaderboardRepository
+                    leaderboardRepository: leaderboardRepository,
+                    pintRepository: pintRepository
                 )
                 .toolbar {
                     // The switcher collapses to a compact menu in the title slot.
@@ -51,13 +55,15 @@ struct HomeView: View {
 #Preview("With groups") {
     HomeView(
         groupRepository: MockGroupRepository(),
-        leaderboardRepository: MockLeaderboardRepository()
+        leaderboardRepository: MockLeaderboardRepository(),
+        pintRepository: MockPintRepository()
     )
 }
 
 #Preview("No groups") {
     HomeView(
         groupRepository: MockGroupRepository(groups: [], activeGroupId: nil),
-        leaderboardRepository: MockLeaderboardRepository()
+        leaderboardRepository: MockLeaderboardRepository(),
+        pintRepository: MockPintRepository()
     )
 }
