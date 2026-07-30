@@ -123,6 +123,7 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0087 | Leaderboard view model derives active/former split and crown from the fetched board; Home composes switcher + leaderboard | Accepted (revisit) |
 | 0088 | Leaderboard rows navigate to Member Pint History via a value-based `MemberRoute`; history view model reads the active group live | Accepted (revisit) |
 | 0089 | Camera photo pipeline extracted into a pure `PhotoProcessor`; `CameraModel` runs the AVCaptureSession off-main and publishes on the main actor | Accepted (revisit) |
+| 0090 | Camera screen logic behind `CameraViewModel`; permission and session driven through `CameraPermissionRequesting`/`CameraControlling` protocols so gating and shutter are unit-tested | Accepted (revisit) |
 
 ---
 
@@ -2179,3 +2180,33 @@ Split the stack in two. `PhotoProcessor` (a pure `enum` namespace, like `ImageVa
 - The 10 MB cap lives in one place (`ImageAsset`), shared by `ImageValidator` (pre-upload check) and `PhotoProcessor` (capture compression).
 - Non-`Sendable` capture warnings remain on the session-queue closures — accepted, not suppressed.
 - **Revisit when:** Task 12 adds the live preview (`UIViewRepresentable` over the exposed `session`), the shutter UI, and the camera-permission explanation screen; Task 14 attaches GPS at shutter time; and on-device testing (Task 30) exercises the real capture path.
+
+---
+
+## ADR-0090: Camera screen logic lives in a `CameraViewModel` driven through `CameraPermissionRequesting`/`CameraControlling` protocols
+
+Status: Accepted (revisit)
+Date: 2026-07-30
+
+### Context
+Task 12 (tasks-ios.md) builds the full-screen camera UI: a `UIViewRepresentable` live preview, a circular shutter, a close button, and — when camera access is denied — an explanation screen with a Settings deep-link. Live preview and real capture need a physical device (the simulator has no camera), so the task is explicit that only the *decisions* should be unit-tested: permission gating (granted → show camera; denied → show explanation) and shutter-triggers-capture, against a mocked `CameraModel`. Two forces: (1) `CameraModel` (ADR-0089) owns a real `AVCaptureSession` we can't spin up in a test, and (2) camera authorization goes through `AVCaptureDevice.authorizationStatus`/`requestAccess`, which also needs the device and shows a system alert.
+
+### Decision
+Put all the branching in a `@MainActor @Observable CameraViewModel` and inject its two hardware collaborators behind protocols so tests supply fakes:
+
+- **`CameraPermissionRequesting`** (+ `CameraPermissionStatus` enum: `.notDetermined`/`.granted`/`.denied`) mirrors the `LocationPermissionRequesting` pattern from Profile Setup (ADR-0084). `AVCameraPermission` is the real impl (reads `authorizationStatus(for: .video)`, only prompts from `.notDetermined` via the already-async `requestAccess`); `MockCameraPermission` reports a preset status, resolves `.notDetermined` to a configurable outcome, and counts requests.
+- **`CameraControlling`** is the slice of `CameraModel` the screen drives (`session`, `capturedPhoto`, `captureError`, `configure`/`start`/`stop`/`capturePhoto`); `CameraModel` conforms via an empty extension. `MockCameraModel` (in the test target) owns an idle `AVCaptureSession` only to satisfy the protocol and tallies calls.
+
+`CameraViewModel.onAppear()` awaits `permission.request()`, then on `.granted` sets `phase = .camera` and does `configure()` + `start()`, else `phase = .denied` (never starting a session it can't use). A `.checking` phase is the initial state so the view never flashes the wrong UI before the first answer. `onDisappear()` stops the session; `capturePhoto()` forwards to the camera. `CameraView` is a thin renderer that branches on `phase`, hosts `CameraPreviewView` (a `UIViewRepresentable` whose `layerClass` *is* `AVCaptureVideoPreviewLayer`, so it resizes for free), and deep-links to `UIApplication.openSettingsURLString` on the denied screen. `ContentView` builds a fresh `CameraModel()` + `AVCameraPermission()` per `fullScreenCover` presentation (session built up on open, torn down on close), replacing the Task 5 placeholder.
+
+### Alternatives Considered
+- **Have `CameraView` own the permission checks and session lifecycle directly:** rejected — that leaves the gating decisions (the whole point of the task's tests) trapped in a `View` that needs the simulator UI to drive; a protocol-injected view model tests them with no device.
+- **Reuse `CameraModel` directly in tests without `CameraControlling`:** rejected — `CameraModel` constructs a real `AVCaptureSession` and can't verify `start`/`stop`/`capturePhoto` were called; the protocol + counting mock makes the orchestration assertable.
+- **A single shared long-lived `CameraModel` on the app:** rejected — the session should only hold the camera while the modal is open; creating it per presentation ties its lifetime to the sheet and needs no explicit teardown beyond `onDisappear`.
+- **Fold camera permission into the existing location abstraction:** rejected — different frameworks (AVFoundation vs CoreLocation) and a distinct status set; a parallel-but-separate protocol reads clearer than one union type.
+
+### Consequences
+- The screen's decisions are fully unit-tested (9 `CameraViewModelTests`): the checking→camera/denied gate, no-reprompt when already decided, shutter→capture, disappear→stop, and passthrough of `capturedPhoto`/`captureError`. `CameraView`, `CameraPreviewView`, and real capture are verified on-device (Task 12 note / Task 30).
+- `CameraModel` gained no test-only surface beyond conforming to `CameraControlling`; the split keeps hardware out of the tested path, consistent with ADR-0089.
+- The "+" flow is now real end-to-end up to capture: tap "+" → `CameraView` (permission-gated) → shutter fires `capturePhoto()`. The post-capture sheet and `PintRepository` hand-off land in Task 13; GPS at shutter time in Task 14.
+- **Revisit when:** Task 13 adds the post-capture sheet that consumes `capturedPhoto`; Task 14 attaches location; and on-device testing (Task 30) exercises live preview + real capture and the Settings deep-link.
