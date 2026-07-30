@@ -126,6 +126,7 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0090 | Camera screen logic behind `CameraViewModel`; permission and session driven through `CameraPermissionRequesting`/`CameraControlling` protocols so gating and shutter are unit-tested | Accepted (revisit) |
 | 0091 | Post-capture sheet is a `PostCaptureViewModel` owning optional note (280-cap)/drink type; Done logs via `createPint` and dismisses the modal; `CameraView` drives it off `capturedPhoto` | Accepted (revisit) |
 | 0092 | Shutter-time GPS behind a `LocationProviding` protocol returning `Coordinate?` (never throws); the fetch starts when the sheet appears and `save()` awaits it; real `LocationService` races `requestLocation()` against a 10s timeout | Accepted (revisit) |
+| 0093 | Profile tab card is a `ProfileViewModel` reading profile from `UserRepository` and the total count from `PintRepository.getMyPints(nil)`; sub-screen rows fire inert closures until Tasks 16–19 supply destinations | Accepted (revisit) |
 
 ---
 
@@ -2268,3 +2269,31 @@ In `PostCaptureViewModel`, `startLocationFetch()` kicks off the fetch as a store
 - The "+" flow now logs real GPS when available, feeding the map (Task 18) with coordinates instead of nil.
 - The eager fetch means a `LocationService` request may be in flight even if the user immediately dismisses the sheet to retake — harmless (the result is discarded) but it does spin up CoreLocation per sheet appearance.
 - **Revisit when:** on-device testing (Task 30) exercises the real timeout race and denied paths; the map feature (Task 18) consumes the coordinates end-to-end; and if we later want a "locating…" indicator on the sheet, the view model would need to expose the in-flight state (currently opaque).
+
+---
+
+## ADR-0093: Profile tab card reads profile from `UserRepository` and total count from `PintRepository.getMyPints(nil)`; sub-screen rows fire inert closures until their destinations exist
+
+Status: Accepted (revisit)
+Date: 2026-07-30
+
+### Context
+Task 15 (tasks-ios.md, l3-ios-app.md §"Profile Tab") builds the Profile tab root: a user card (avatar or initials, display name, total pints logged) above navigation rows to four sub-screens — Edit Profile, My Pints, My Groups, Settings. Those destinations don't exist yet (Tasks 16–19). Two questions: where does the "total pints" number come from, and how do rows behave before their destinations are built.
+
+### Decision
+A `@MainActor @Observable ProfileViewModel` owns only screen-local state — the loaded `user` and `totalPintCount` — mirroring every other view model. `load()` fetches the profile via `UserRepository.getProfile()` and derives the total from `PintRepository.getMyPints(groupId: nil)`.count — the same "all groups" query the My Pints "All Groups" filter uses, so the count is consistent with that screen for free. Both use the silent-`try?`-then-fallback pattern (blank name / zero count on failure) the other view models use; the real error path lands with networking (Task 26). Derived props on the VM: `displayName`, `initials` (via `InitialsGenerator`), `showsInitialsPlaceholder` (`avatarUrl == nil`).
+
+Unlike the Home view models, `ProfileViewModel` reads **nothing** off the GroupRepository — the card is about the person, not the active group, so there's no group context and the pint total spans all groups.
+
+`ProfileView` is a thin renderer: a `List` with a user-card section (redacted on first load) and a section of rows. Each row is a `Button` firing an injected closure (`onEditProfile`/`onMyPints`/`onMyGroups`/`onSettings`), defaulting to `{}` — the same "wire the destination later" convention as the group switcher's Create/Join buttons (Task 8). ContentView threads a `UserRepositoryProtocol` (newly added to its init) into the Profile tab; RootView already held one and passes it through.
+
+### Alternatives Considered
+- **Store the total on the User model / fetch a dedicated count endpoint:** rejected — the API has no "my pint count" field; deriving `.count` from the existing all-groups query needs no new repository method and stays truthful to the My Pints screen.
+- **`NavigationLink` rows to placeholder destinations now:** rejected — placeholders would need building and then replacing; inert closures keep the surface minimal and make the real destinations a one-line injection in Tasks 16–19 (matching Task 8).
+- **Share one `AvatarCircle` across leaderboard + profile:** rejected for now — two small private copies is less coupling than a shared component with a single caller each; promote to `Utilities`/a shared view when a third caller appears (Task 24's map pins are the likely trigger).
+
+### Consequences
+- The card's data logic is fully unit-tested (5 `ProfileViewModelTests`): profile loads, total reflects all-groups count, zero-pints case, and the avatar-placeholder toggle both ways.
+- The Profile tab is no longer a placeholder; the four sub-screen rows are visible and tappable but do nothing until their tasks land.
+- Real avatars are still initials placeholders (networking, Task 26); `showsInitialsPlaceholder` is effectively always true today but becomes meaningful once remote images load.
+- **Revisit when:** Tasks 16–19 replace the inert closures with real navigation; Task 26 loads remote avatars; and if a third caller needs `AvatarCircle`, extract it to a shared view.
