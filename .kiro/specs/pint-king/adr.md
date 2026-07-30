@@ -129,6 +129,7 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0093 | Profile tab card is a `ProfileViewModel` reading profile from `UserRepository` and the total count from `PintRepository.getMyPints(nil)`; sub-screen rows fire inert closures until Tasks 16–19 supply destinations | Accepted (revisit) |
 | 0094 | Edit Profile is an `EditProfileViewModel` that saves only what changed; Profile navigates to it value-based via a `ProfileRoute` carrying the loaded `User` | Accepted (revisit) |
 | 0095 | My Pints splits into `MyPintsViewModel` + `EditPintViewModel`; upload status modelled as a `PendingPint` on the repo; 24h delete window enforced by the repo, UI-gated by an injected clock | Accepted (revisit) |
+| 0096 | Settings screen: account deletion delegates to `AuthRepository.deleteAccount()` (session-clear returns to Login via the RootView gate); the location row is read-only, reflecting a new `status` on `LocationPermissionRequesting` and deep-linking to iOS Settings | Accepted (revisit) |
 
 ---
 
@@ -2359,3 +2360,32 @@ Task 17 (tasks-ios.md, l3-ios-app.md §"Profile Tab") builds the My Pints screen
 - One pre-existing test (`pendingPintsStartsEmpty`) was retired — the mock now deliberately seeds a non-empty queue — and replaced with three that assert the seeded statuses and the retry/discard behaviour.
 - Photos are still SF Symbol placeholders and the "current avatar" caveat from ADR-0094 stands — remote image loading is Task 26.
 - **Revisit when:** Task 26 loads real photos; Task 29 replaces the seeded static queue with the real offline-upload machinery (retry becomes an actual upload attempt, and `PendingPint` may gain a failure reason / retry count).
+
+## ADR-0096: Settings delegates account deletion to `AuthRepository.deleteAccount()` (RootView gate returns to Login); the location row is read-only via a new `status` on `LocationPermissionRequesting`
+
+Status: Accepted (revisit)
+Date: 2026-07-30
+
+### Context
+Task 18 (tasks-ios.md, l3-ios-app.md §"Settings", §"Delete Account") builds the Settings screen, reached from the Profile tab's "Settings" row (left inert by ADR-0093). It has two concerns: a location-permission control and account deletion. Two questions surfaced. First, iOS apps can't flip the system location permission programmatically — so what does the "location toggle" actually do, and how does the screen read the current state (the existing `LocationPermissionRequesting` only had `request()`, which *prompts*)? Second, after a confirmed deletion the app must land back on Login — where does that navigation come from, given the destructive-confirmation UI and the async cascade?
+
+### Decision
+**Account deletion delegates to the repository; navigation is a free consequence of the auth gate.** `AuthRepositoryProtocol` gains `deleteAccount() async throws`; the mock's implementation clears the session (`currentUser = nil`, `isAuthenticated = false`) exactly like `logout`, plus a `shouldFailDelete` knob for the error path. `SettingsViewModel.deleteAccount()` just calls it and, on failure, surfaces an inline message. Because `RootView` already renders Login whenever `isAuthenticated` is false (ADR-0083), a successful delete swaps the whole screen back to Login declaratively — the VM needs **no** completion callback or navigation call, mirroring how logout works. The real repo will additionally run the server cascade and wipe the Keychain (Task 26).
+
+**The location row is read-only and deep-links out.** `LocationPermissionRequesting` gains a `status: LocationPermissionDecision` getter (read without prompting) — mirroring `CameraPermissionRequesting.status`. `CLLocationPermission` computes it from `manager.authorizationStatus` (reusing the existing `decision(for:)` mapping, so `.notDetermined` reads as `.denied`); `MockLocationPermission` returns its preset `decision` without bumping `requestCount`. `SettingsViewModel` exposes `isLocationEnabled` / `locationStatusText` off that. The row itself is a button that deep-links to `UIApplication.openSettingsURLString` via `@Environment(\.openURL)` — the same pattern as the camera-denied screen (ADR-0090) — because that's the only place the user can actually change the permission.
+
+**The destructive confirmation is a sheet, not an alert.** `DeleteAccountConfirmationView` lists exactly what's erased (profile, all pint logs, avatar photo — per requirements §8.2) with a permanence footer, a red Delete button (spinner + disabled while `isDeleting`), and Cancel. A sheet (over a system alert) gives room for the itemised list the requirement demands. It takes the parent's `isDeleting` and an `async onConfirm` closure so the sheet stays up with its spinner until the cascade returns.
+
+**Value-based navigation.** `ProfileView`'s `ProfileRoute` gains a `.settings` case; the row becomes a `NavigationLink(value:)` and the destination is built inline — mirroring `.editProfile` / `.myPints` (ADR-0094/0095). `ProfileView` now also retains `authRepository` and `locationPermission`, threaded `PintKingApp → RootView → ContentView → ProfileView`; its last inert closure is `onMyGroups` (Task 19).
+
+### Alternatives Considered
+- **A completion callback that navigates to Login:** rejected — redundant. The auth gate already reacts to `isAuthenticated`, so deletion (like logout) gets correct navigation for free; adding a callback would be a second, drift-prone path.
+- **A real on/off `Toggle` for location:** rejected — iOS gives apps no API to grant/revoke the system permission; a toggle that can only ever deep-link out would misrepresent its own power. A status row + "manage in Settings" is honest.
+- **Reuse `request()` to read the status:** rejected — `request()` *prompts* when undetermined; Settings must reflect the standing state silently. A separate non-prompting `status` getter (as camera already has) keeps "ask" and "read" distinct.
+- **A system `confirmationDialog`/`alert` for the destructive confirm:** rejected — requirements §8.2 mandates listing the three things deleted; a sheet renders that list cleanly, an alert crams it into a message string.
+
+### Consequences
+- Settings logic is unit-tested (6 new `SettingsViewModelTests`): location status maps granted→"Enabled"/denied→"Disabled", delete ends the session (`isAuthenticated` false, `currentUser` nil), a forced failure surfaces an error and keeps the session, and `isDeleting` resets after completion.
+- `AuthRepositoryProtocol` changed shape (`deleteAccount`), so both the mock and any conformers gain it; `LocationPermissionRequesting` changed shape (`status`), updating `CLLocationPermission` and `MockLocationPermission`.
+- `DeleteAccountConfirmationView`'s success-path `dismiss()` is belt-and-suspenders — on the real success path the whole modal disappears with the screen swap anyway; on the mock it keeps things tidy.
+- **Revisit when:** Task 26 wires the real `deleteAccount` (server cascade + Keychain wipe) and may want a loading/blocking state during the network call; the real auth flow (Task 26) confirms the RootView gate still returns to Login after a networked deletion.
