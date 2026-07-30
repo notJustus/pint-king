@@ -7,7 +7,7 @@
 
 import Foundation
 
-struct User: Codable, Equatable, Identifiable, Sendable {
+struct User: Codable, Equatable, Hashable, Identifiable, Sendable {
     let id: UUID
     let appleId: String
     let displayName: String

@@ -18,9 +18,13 @@ import SwiftUI
 struct ProfileView: View {
     @State private var model: ProfileViewModel
 
-    /// Sub-screen navigation hooks, injected by the parent. Inert until Tasks
-    /// 16–19 supply real destinations.
-    private let onEditProfile: () -> Void
+    /// The user repository, held so it can be threaded into the Edit Profile
+    /// destination (Task 16). The view model uses its own copy for loading.
+    private let userRepository: any UserRepositoryProtocol
+
+    /// Remaining sub-screen navigation hooks, injected by the parent. Inert until
+    /// Tasks 17–19 supply real destinations. Edit Profile is now wired internally
+    /// via value-based navigation (`ProfileRoute`).
     private let onMyPints: () -> Void
     private let onMyGroups: () -> Void
     private let onSettings: () -> Void
@@ -28,7 +32,6 @@ struct ProfileView: View {
     init(
         userRepository: any UserRepositoryProtocol,
         pintRepository: any PintRepositoryProtocol,
-        onEditProfile: @escaping () -> Void = {},
         onMyPints: @escaping () -> Void = {},
         onMyGroups: @escaping () -> Void = {},
         onSettings: @escaping () -> Void = {}
@@ -37,7 +40,7 @@ struct ProfileView: View {
             userRepository: userRepository,
             pintRepository: pintRepository
         ))
-        self.onEditProfile = onEditProfile
+        self.userRepository = userRepository
         self.onMyPints = onMyPints
         self.onMyGroups = onMyGroups
         self.onSettings = onSettings
@@ -51,15 +54,39 @@ struct ProfileView: View {
             }
 
             Section {
-                row("Edit Profile", systemImage: "pencil", action: onEditProfile)
+                editProfileRow
                 row("My Pints", systemImage: "mug", action: onMyPints)
                 row("My Groups", systemImage: "person.3", action: onMyGroups)
                 row("Settings", systemImage: "gearshape", action: onSettings)
             }
         }
         .navigationTitle("Profile")
+        .navigationDestination(for: ProfileRoute.self) { route in
+            switch route {
+            case .editProfile(let user):
+                EditProfileView(user: user, userRepository: userRepository) {
+                    // A save may have renamed / re-avatared the profile — re-fetch
+                    // so the card reflects it after we pop back.
+                    Task { await model.refresh() }
+                }
+            }
+        }
         .task { await model.load() }
         .refreshable { await model.refresh() }
+    }
+
+    /// Edit Profile pushes onto the Profile tab's stack, carrying the loaded user
+    /// as the nav value. The row is inert until the profile has loaded — there's
+    /// no user to edit before then.
+    @ViewBuilder private var editProfileRow: some View {
+        if let user = model.user {
+            NavigationLink(value: ProfileRoute.editProfile(user)) {
+                Label("Edit Profile", systemImage: "pencil")
+            }
+        } else {
+            Label("Edit Profile", systemImage: "pencil")
+                .foregroundStyle(.secondary)
+        }
     }
 
     /// Avatar + name + total pint count.
@@ -92,6 +119,14 @@ struct ProfileView: View {
         }
         .foregroundStyle(.primary)
     }
+}
+
+/// The Profile tab's push destinations, used as value-based navigation values
+/// (mirrors the Home tab's `MemberRoute`). Edit Profile carries the loaded user
+/// so the destination pre-fills without another fetch. `User` is `Hashable` via
+/// its `id`, so the enum is `Hashable` for free.
+private enum ProfileRoute: Hashable {
+    case editProfile(User)
 }
 
 /// Circular initials placeholder (real avatars arrive with networking, Task 26).
