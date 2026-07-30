@@ -27,19 +27,12 @@ struct ProfileView: View {
     private let authRepository: any AuthRepositoryProtocol
     private let locationPermission: any LocationPermissionRequesting
 
-    /// The one remaining sub-screen navigation hook, injected by the parent.
-    /// Inert until Task 19 supplies a real destination. Edit Profile, My Pints,
-    /// and Settings are wired internally via value-based navigation
-    /// (`ProfileRoute`).
-    private let onMyGroups: () -> Void
-
     init(
         userRepository: any UserRepositoryProtocol,
         groupRepository: any GroupRepositoryProtocol,
         pintRepository: any PintRepositoryProtocol,
         authRepository: any AuthRepositoryProtocol,
-        locationPermission: any LocationPermissionRequesting,
-        onMyGroups: @escaping () -> Void = {}
+        locationPermission: any LocationPermissionRequesting
     ) {
         _model = State(initialValue: ProfileViewModel(
             userRepository: userRepository,
@@ -50,7 +43,6 @@ struct ProfileView: View {
         self.pintRepository = pintRepository
         self.authRepository = authRepository
         self.locationPermission = locationPermission
-        self.onMyGroups = onMyGroups
     }
 
     var body: some View {
@@ -65,7 +57,9 @@ struct ProfileView: View {
                 NavigationLink(value: ProfileRoute.myPints) {
                     Label("My Pints", systemImage: "mug")
                 }
-                row("My Groups", systemImage: "person.3", action: onMyGroups)
+                NavigationLink(value: ProfileRoute.groupList) {
+                    Label("My Groups", systemImage: "person.3")
+                }
                 NavigationLink(value: ProfileRoute.settings) {
                     Label("Settings", systemImage: "gearshape")
                 }
@@ -82,6 +76,10 @@ struct ProfileView: View {
                 }
             case .myPints:
                 MyPintsView(groupRepository: groupRepository, pintRepository: pintRepository)
+            case .groupList:
+                // Create / Join / Detail destinations arrive in Tasks 20–22; the
+                // list renders and its actions are inert until then.
+                GroupListView(groupRepository: groupRepository)
             case .settings:
                 SettingsView(authRepository: authRepository, locationPermission: locationPermission)
             }
@@ -120,20 +118,6 @@ struct ProfileView: View {
         }
         .padding(.vertical, 8)
     }
-
-    /// A tappable navigation-style row with a leading icon and a chevron.
-    private func row(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack {
-                Label(title, systemImage: systemImage)
-                Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(.tertiary)
-            }
-        }
-        .foregroundStyle(.primary)
-    }
 }
 
 /// The Profile tab's push destinations, used as value-based navigation values
@@ -143,6 +127,7 @@ struct ProfileView: View {
 private enum ProfileRoute: Hashable {
     case editProfile(User)
     case myPints
+    case groupList
     case settings
 }
 

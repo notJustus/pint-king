@@ -12,8 +12,10 @@ import Foundation
 
 @MainActor
 protocol GroupRepositoryProtocol: AnyObject {
-    /// The groups the current user belongs to.
-    func getGroups() async throws -> [Group]
+    /// The groups the current user belongs to, as list summaries (each carrying
+    /// the caller's role + the member count — see `GroupSummary`). Maps to
+    /// GET /groups.
+    func getGroups() async throws -> [GroupSummary]
 
     /// Full detail (group + members) for one group. Maps to GET /groups/{id}.
     func getGroupDetail(groupId: UUID) async throws -> GroupDetail

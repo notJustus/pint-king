@@ -21,7 +21,7 @@ import Foundation
 final class GroupSwitcherViewModel {
     /// The groups the user belongs to, fetched by `load()`. Empty until loaded (or
     /// when the user has no groups) — the view shows its empty state in that case.
-    private(set) var groups: [Group] = []
+    private(set) var groups: [GroupSummary] = []
 
     private let groupRepository: any GroupRepositoryProtocol
 
@@ -55,7 +55,7 @@ final class GroupSwitcherViewModel {
 
     /// Switch the Active_Group to `group`. A no-op if it's already active, so
     /// re-selecting the current group doesn't churn shared state.
-    func select(_ group: Group) async {
+    func select(_ group: GroupSummary) async {
         guard group.id != activeGroup?.id else { return }
         try? await groupRepository.switchActiveGroup(groupId: group.id)
     }

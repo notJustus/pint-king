@@ -35,8 +35,15 @@ final class MockGroupRepository: GroupRepositoryProtocol {
         self.activeGroup = groups.first { $0.id == activeGroupId }
     }
 
-    func getGroups() async throws -> [Group] {
-        groups
+    func getGroups() async throws -> [GroupSummary] {
+        groups.map { group in
+            let members = membersByGroup[group.id] ?? []
+            let role = members.first { $0.userId == currentUserId }?.role ?? .member
+            return GroupSummary(
+                id: group.id, name: group.name, inviteCode: group.inviteCode,
+                role: role, memberCount: members.count
+            )
+        }
     }
 
     func getGroupDetail(groupId: UUID) async throws -> GroupDetail {

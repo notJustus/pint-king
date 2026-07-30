@@ -38,7 +38,7 @@ final class MyPintsViewModel {
     private(set) var pints: [PintLog] = []
 
     /// The groups the user belongs to, for the filter dropdown. Fetched in `load()`.
-    private(set) var groups: [Group] = []
+    private(set) var groups: [GroupSummary] = []
 
     /// The active filter: a group id, or nil for "All Groups". Defaults to the
     /// Active_Group on first load, then follows the user's selection.

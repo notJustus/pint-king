@@ -50,7 +50,10 @@ struct GroupSwitcherViewModelTests {
         await vm.load()
         #expect(repo.activeGroup?.id == MockData.friday.id)
 
-        await vm.select(MockData.office)
+        // `select` takes a GroupSummary (the loaded list shape), so pick it off
+        // the view model's fetched groups rather than the raw fixture.
+        let office = vm.groups.first { $0.id == MockData.office.id }!
+        await vm.select(office)
 
         // Shared state changed on the repository, and the VM reads it back live.
         #expect(repo.activeGroup?.id == MockData.office.id)
@@ -60,7 +63,8 @@ struct GroupSwitcherViewModelTests {
     @Test func selectingActiveGroupIsANoOp() async {
         let (vm, repo) = withGroups()
         await vm.load()
-        await vm.select(MockData.friday)   // already active
+        let friday = vm.groups.first { $0.id == MockData.friday.id }!
+        await vm.select(friday)   // already active
         #expect(repo.activeGroup?.id == MockData.friday.id)
     }
 
