@@ -130,6 +130,7 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0094 | Edit Profile is an `EditProfileViewModel` that saves only what changed; Profile navigates to it value-based via a `ProfileRoute` carrying the loaded `User` | Accepted (revisit) |
 | 0095 | My Pints splits into `MyPintsViewModel` + `EditPintViewModel`; upload status modelled as a `PendingPint` on the repo; 24h delete window enforced by the repo, UI-gated by an injected clock | Accepted (revisit) |
 | 0096 | Settings screen: account deletion delegates to `AuthRepository.deleteAccount()` (session-clear returns to Login via the RootView gate); the location row is read-only, reflecting a new `status` on `LocationPermissionRequesting` and deep-linking to iOS Settings | Accepted (revisit) |
+| 0097 | Group list fetch returns a new `GroupSummary` (role + memberCount, matching GET /groups) instead of `Group`; Group List navigates value-based via `ProfileRoute.groupList` with inert Create/Join/Detail closures | Accepted (revisit) |
 
 ---
 
@@ -2389,3 +2390,34 @@ Task 18 (tasks-ios.md, l3-ios-app.md §"Settings", §"Delete Account") builds th
 - `AuthRepositoryProtocol` changed shape (`deleteAccount`), so both the mock and any conformers gain it; `LocationPermissionRequesting` changed shape (`status`), updating `CLLocationPermission` and `MockLocationPermission`.
 - `DeleteAccountConfirmationView`'s success-path `dismiss()` is belt-and-suspenders — on the real success path the whole modal disappears with the screen swap anyway; on the mock it keeps things tidy.
 - **Revisit when:** Task 26 wires the real `deleteAccount` (server cascade + Keychain wipe) and may want a loading/blocking state during the network call; the real auth flow (Task 26) confirms the RootView gate still returns to Login after a networked deletion.
+
+---
+
+## ADR-0097: Group list fetch returns a new `GroupSummary` (role + member count) rather than `Group`; Group List navigates value-based via `ProfileRoute.groupList` with inert Create/Join/Detail closures
+
+Status: Accepted (revisit)
+Date: 2026-07-30
+
+### Context
+Task 19 (tasks-ios.md, l3-ios-app.md §"Group List") builds the list of every group the user belongs to, each row showing the name, member count, and an admin badge where the user is an admin, plus entry points to Create / Join / Detail. Two frictions surfaced. First, the row needs two facts the iOS `Group` model (Task 2) doesn't carry: the caller's **role** in the group and its **member count**. `Group` instead carries `inviteCode` + `createdBy` + `createdAt` — and notably the real API's `GET /groups` (`GroupResponse`) returns `{id, name, inviteCode, role, memberCount}`, i.e. it has role/memberCount and *not* createdBy/createdAt. So the existing `getGroups() -> [Group]` never matched the endpoint it stands in for. Second, Create / Join / Detail are Tasks 20–22, so this screen's three actions have no real destinations yet.
+
+### Decision
+**Introduce `GroupSummary` and change `getGroups()` to return it.** A new value type `GroupSummary { id, name, inviteCode, role: GroupMemberRole, memberCount: Int }` mirrors the `GroupResponse` DTO exactly. `GroupRepositoryProtocol.getGroups()` now returns `[GroupSummary]`; the mock derives `role` (the current user's membership role) and `memberCount` from its already-seeded per-group member lists. `Group` stays the return shape for the *mutation* endpoints (`createGroup`/`joinGroup`/`updateGroupName`/`regenerateInviteCode`) that genuinely produce invite metadata, and `GroupDetail` (group + full member list) remains the detail shape — so each of the three group shapes maps to the endpoint that produces it (same "type per endpoint" reasoning as `GroupDetail` in ADR-0079), and the list never over-fetches a member array just to show a count.
+
+**Migrate the two existing `getGroups()` callers.** `GroupSwitcherViewModel` and `MyPintsViewModel` both only read `.id` / `.name` off the list, so both just switch their `groups` property (and the switcher's `select(_:)` parameter) from `Group` to `GroupSummary` — no view changes (both are `Identifiable` with the same `id`/`name`). The one test that passed a raw `Group` fixture to `select` now picks the `GroupSummary` off the loaded list.
+
+**`GroupListViewModel` owns only screen-local state, NOT scoped to the Active_Group.** Unlike the Home view models (leaderboard/history/switcher), this screen is about *all* memberships, so it never reads `groupRepository.activeGroup`. It holds the fetched `groups` + a first-load `isLoading` (skeleton once, so pull-to-refresh doesn't blank the list) — the same silent-`try?`-fallback-to-empty pattern the switcher uses, with no error affordance until networking (Task 26).
+
+**Value-based navigation; sub-screen actions inert.** `ProfileView`'s `ProfileRoute` gains a `.groupList` case, so "My Groups" becomes a `NavigationLink(value:)` resolved inline — retiring `ProfileView`'s last inert closure (`onMyGroups`, left by ADR-0093/0096) and its now-unused `row(...)` helper. `GroupListView` in turn injects `onCreate` / `onJoin` / `onSelect` closures defaulting to `{}` — the "wire the destination later" convention (Task 8 switcher, Task 15 profile rows) — because Create/Join/Detail land in Tasks 20–22.
+
+### Alternatives Considered
+- **Add `role` + `memberCount` fields to `Group`:** rejected — they'd be dead weight on the mutation-return and detail paths (which don't compute a per-caller role or count), and `Group` would still carry `createdBy`/`createdAt` that `GET /groups` doesn't return. A dedicated list shape matches the wire exactly.
+- **Compute role/count in the view model from `getGroupDetail` per group:** rejected — N+1 fetches (one detail call per group) just to render a list, when the list endpoint already returns both. The summary carries them in the one call.
+- **Keep `onMyGroups` as an injected closure (like the switcher's Create/Join):** rejected — the destination is *this same tab's* stack, so value-based navigation (mirroring `.editProfile`/`.myPints`/`.settings`) is the established in-feature pattern; a closure threaded from `ContentView` would be a needless second nav path.
+- **Push Group Detail via a `NavigationLink(value:)` now:** rejected — Group Detail is Task 22 and doesn't exist; an inert `onSelect` closure keeps the row tappable-shaped without a fake destination.
+
+### Consequences
+- 5 new `GroupListViewModelTests` (load populates + counts, admin role reported per group, empty state, refresh picks up a new group without blanking). Full suite **223 pass**.
+- `getGroups()` changed shape, a protocol-level change: the mock and both callers (switcher, My Pints) were updated in lockstep; the real `NetworkGroupRepository` (Task 26) will decode `GroupResponse` straight into `GroupSummary`.
+- Three group shapes now coexist (`Group`, `GroupSummary`, `GroupDetail`), one per endpoint — more types, but each is a faithful, minimal DTO with no unused fields.
+- **Revisit when:** Tasks 20–22 supply the real Create / Join / Detail destinations (the inert closures / `onSelect` get wired, likely to `.groupList`-adjacent `ProfileRoute` cases or a create/join sheet); Task 26 wires the real fetch and may add a fetch-error affordance.
