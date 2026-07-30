@@ -128,6 +128,7 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0092 | Shutter-time GPS behind a `LocationProviding` protocol returning `Coordinate?` (never throws); the fetch starts when the sheet appears and `save()` awaits it; real `LocationService` races `requestLocation()` against a 10s timeout | Accepted (revisit) |
 | 0093 | Profile tab card is a `ProfileViewModel` reading profile from `UserRepository` and the total count from `PintRepository.getMyPints(nil)`; sub-screen rows fire inert closures until Tasks 16–19 supply destinations | Accepted (revisit) |
 | 0094 | Edit Profile is an `EditProfileViewModel` that saves only what changed; Profile navigates to it value-based via a `ProfileRoute` carrying the loaded `User` | Accepted (revisit) |
+| 0095 | My Pints splits into `MyPintsViewModel` + `EditPintViewModel`; upload status modelled as a `PendingPint` on the repo; 24h delete window enforced by the repo, UI-gated by an injected clock | Accepted (revisit) |
 
 ---
 
@@ -2326,3 +2327,35 @@ A `@MainActor @Observable EditProfileViewModel` owns only screen-local state (`d
 - `User` is now `Hashable` — a harmless widening (it was already `Equatable`) that unlocks value-based navigation carrying the whole model.
 - Avatars picked in the session render from in-memory bytes; an existing remote avatar still shows as an initials placeholder until networking (Task 26) can load it — so the screen can't yet show the *current* avatar, only a freshly chosen one.
 - **Revisit when:** Task 26 loads remote avatars (the pre-filled avatar becomes a real image, and a remove-avatar affordance may be wanted); Tasks 17–19 wire the remaining three rows.
+
+---
+
+## ADR-0095: My Pints splits into `MyPintsViewModel` + `EditPintViewModel`; upload status is a `PendingPint` on the repository; the 24h delete window is enforced by the repository and UI-gated by an injected clock
+
+Status: Accepted (revisit)
+Date: 2026-07-30
+
+### Context
+Task 17 (tasks-ios.md, l3-ios-app.md §"Profile Tab") builds the My Pints screen: the signed-in user's own pints across groups, with a group filter (defaulting to the Active_Group, widening to "All Groups"), per-pint edit (note + drink type) and delete (swipe, 24h window), plus the offline queue's pending / failed rows with retry / discard. It's reached from the Profile tab's "My Pints" row, left inert by ADR-0093. Four questions surfaced: how to model a queued pint's upload status (the existing `pendingPints: [PintLog]` can't distinguish pending from failed), where the 24h delete rule lives, how the edit sheet is structured, and how the 24h window can be tested against the fixed `MockData.now` clock while defaulting to the wall clock in production.
+
+### Decision
+**Two view models.** `MyPintsViewModel` owns the list: the fetched confirmed pints, the group filter (`selectedGroupId`, nil == all groups, seeded once from the Active_Group then following the user), an inline error, and the delete / retry / discard actions. It builds `[MyPintRow]` — each row a pint + its group name + a `Status` (`confirmed` / `pending` / `failed`) — with queued rows first so they get attention. `EditPintViewModel` drives the edit bottom sheet, mirroring `PostCaptureViewModel`'s metadata rules (280-char note cap via a `didSet`, toggleable drink chip) but editing an existing pint via `editPint` instead of creating one. Both are thin-renderer-backed like every other screen.
+
+**Upload status is a new `PendingPint` domain type.** `PendingPint { let pint: PintLog; let status: Status }` where `Status` is `.pending` / `.failed`, and `PintRepositoryProtocol.pendingPints` changes from `[PintLog]` to `[PendingPint]`. The protocol also gains `retryPint(pintId:)` (re-queues a failed pint → pending) and `discardPint(pintId:)` (drops it). The real queue mechanics stay in Task 29; this is just the shape the UI renders. The `MockPintRepository` seeds one pending + one failed pint so both badge states are exercisable, and `MyPintsViewModel` reads `pendingPints` *live* off the repository (a computed pass-through) so retry / discard re-render without a manual refetch.
+
+**The repository is the single source of truth for the 24h window; the VM's clock only gates UX.** `deletePint` throws `.forbidden` outside 24h (as before), and `MyPintsViewModel.delete` maps that to a human message. The VM *also* exposes `canDelete(_:)` so the view shows a destructive confirmation dialog when the delete would succeed and just surfaces the rejection message when it wouldn't. Both `MyPintsViewModel` and `MockPintRepository` take an injected `now: Date` (defaulting to `Date()` in the VM, `MockData.now` in the mock) — tests pass `MockData.now` so the static fixtures, dated relative to it, fall deterministically inside or outside the window.
+
+**Value-based navigation.** `ProfileView`'s `ProfileRoute` gains a `.myPints` case; the row becomes a `NavigationLink(value:)`, and the destination is built inline (threading the group + pint repositories) — mirroring the `.editProfile` wiring from ADR-0094. `ProfileView` now retains `groupRepository` too (My Pints needs the group list for its filter and row group-names).
+
+### Alternatives Considered
+- **Add a `status` field to `PintLog` instead of a wrapper type:** rejected — a confirmed pint fetched from the server has no upload status, and threading an "always confirmed" enum through every `PintLog` (leaderboard, map, history) would be noise. The queue is a distinct concern; `PendingPint` keeps it out of the shared model. `MyPintRow.Status` (a view-model type) unifies the two for rendering without polluting the domain.
+- **Enforce the 24h window in the view model:** rejected — the real API is the authority (it rejects the DELETE), so the client can't be trusted to gate it; duplicating the rule as the *only* check would drift. The repo enforces; the VM's `canDelete` is purely a UX affordance (confirm-vs-message), explicitly a mirror, not a second source of truth.
+- **A single view model with an embedded edit mode:** rejected — the edit sheet has its own lifecycle (`isSaving` / `isSaved` / its own note+drink state) and is presented modally; a separate `EditPintViewModel` matches the post-capture sheet's shape and keeps each screen's state isolated.
+- **Reuse `PostCaptureViewModel` for editing:** rejected — it takes a mandatory `photoData`, starts a GPS fetch, and *creates* a pint; editing shares only the note/drink rules, which are small enough to restate.
+
+### Consequences
+- My Pints logic is fully unit-tested (17 new `MyPintsViewModelTests` + `EditPintViewModelTests`, plus 2 new mock-repo tests for retry/discard): filter defaults to the active group and widens to all groups, pending/failed rows merge above confirmed with badges, delete inside the window removes the row while delete outside shows the rejection message and keeps it, `canDelete` reflects the window, and retry/discard mutate the queue.
+- `PintRepositoryProtocol` changed shape (`pendingPints` type + two new methods), so every conformer was updated: `MockPintRepository` (real impl) and the two test spies. `MockPintRepository` now also takes `pending:` and `now:` init params (both defaulted, so existing call sites are unaffected).
+- One pre-existing test (`pendingPintsStartsEmpty`) was retired — the mock now deliberately seeds a non-empty queue — and replaced with three that assert the seeded statuses and the retry/discard behaviour.
+- Photos are still SF Symbol placeholders and the "current avatar" caveat from ADR-0094 stands — remote image loading is Task 26.
+- **Revisit when:** Task 26 loads real photos; Task 29 replaces the seeded static queue with the real offline-upload machinery (retry becomes an actual upload attempt, and `PendingPint` may gain a failure reason / retry count).
