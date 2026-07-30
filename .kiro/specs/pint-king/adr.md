@@ -127,6 +127,7 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0091 | Post-capture sheet is a `PostCaptureViewModel` owning optional note (280-cap)/drink type; Done logs via `createPint` and dismisses the modal; `CameraView` drives it off `capturedPhoto` | Accepted (revisit) |
 | 0092 | Shutter-time GPS behind a `LocationProviding` protocol returning `Coordinate?` (never throws); the fetch starts when the sheet appears and `save()` awaits it; real `LocationService` races `requestLocation()` against a 10s timeout | Accepted (revisit) |
 | 0093 | Profile tab card is a `ProfileViewModel` reading profile from `UserRepository` and the total count from `PintRepository.getMyPints(nil)`; sub-screen rows fire inert closures until Tasks 16–19 supply destinations | Accepted (revisit) |
+| 0094 | Edit Profile is an `EditProfileViewModel` that saves only what changed; Profile navigates to it value-based via a `ProfileRoute` carrying the loaded `User` | Accepted (revisit) |
 
 ---
 
@@ -2297,3 +2298,31 @@ Unlike the Home view models, `ProfileViewModel` reads **nothing** off the GroupR
 - The Profile tab is no longer a placeholder; the four sub-screen rows are visible and tappable but do nothing until their tasks land.
 - Real avatars are still initials placeholders (networking, Task 26); `showsInitialsPlaceholder` is effectively always true today but becomes meaningful once remote images load.
 - **Revisit when:** Tasks 16–19 replace the inert closures with real navigation; Task 26 loads remote avatars; and if a third caller needs `AvatarCircle`, extract it to a shared view.
+
+---
+
+## ADR-0094: Edit Profile is an `EditProfileViewModel` that saves only what changed; Profile navigates to it value-based via a `ProfileRoute` carrying the loaded `User`
+
+Status: Accepted (revisit)
+Date: 2026-07-30
+
+### Context
+Task 16 (tasks-ios.md, l3-ios-app.md §"Profile Tab") builds the Edit Profile screen: change the display name (1–30 chars) and/or the avatar (PHPicker, 5 MB, HEIC→JPEG). It's reached from the Profile tab's "Edit Profile" row, which ADR-0093 left as an inert closure. Three questions: how much of the ProfileSetup logic to reuse, how to avoid needless writes when only one field changed, and how the Profile tab navigates to the screen.
+
+### Decision
+A `@MainActor @Observable EditProfileViewModel` owns only screen-local state (`displayName`, `avatarData`, `isSaving`, `errorMessage`, `isSaved`), mirroring `ProfileSetupViewModel` (Task 7) — the two screens share display-name validation (`nameRange = 1...30`, trim-then-count) and avatar validation (shared `ImageValidator`, `.avatar` 5 MB cap), differing only in that setup also requests location and Edit pre-fills from an existing `User`.
+
+**Save only what changed.** The VM captures `originalDisplayName` at init and exposes `hasChanges` (name differs from original **or** a new avatar was picked). `save()` calls `updateDisplayName` only when the name changed and `uploadAvatar` only when `avatarData` is set, so an avatar-only edit doesn't rename and a no-op save is a harmless dismiss. A nil `avatarData` means "leave the existing avatar untouched", not "remove it" — there's no remove-avatar affordance in the MVP. Save aborts on an invalid name before any repository call.
+
+**Value-based navigation.** `ProfileView` gains a private `ProfileRoute: Hashable` enum (`.editProfile(User)`) and a single `.navigationDestination(for: ProfileRoute.self)`, mirroring the Home tab's `MemberRoute` (Task 10). The "Edit Profile" row is a `NavigationLink(value:)` carrying the already-loaded `User`, so the destination pre-fills without a second fetch; the row is inert (greyed, non-link) until the profile loads. This required making `User` conform to `Hashable` (all stored fields already are). On a successful save the destination's `onSaved` closure calls `model.refresh()` so the card reflects the new name/avatar after the pop.
+
+### Alternatives Considered
+- **Reuse `ProfileSetupViewModel` for both screens:** rejected — setup's `continueSetup()` bundles location permission and an `initialDisplayName` string input; Edit takes a `User` and never touches location. A separate VM keeps each screen's responsibilities honest; the shared bits (validation, `message(for:)`) are small enough to duplicate rather than hoist prematurely.
+- **Always call both `updateDisplayName` and `uploadAvatar` on save:** rejected — an unconditional rename on an avatar-only edit is a wasted write (and, against the real API, a wasted request); `hasChanges`-gated calls keep the save minimal and match what the user actually did.
+- **Keep the inert `onEditProfile` closure and inject the destination from ContentView:** rejected — Edit Profile needs the loaded `User`, which lives in `ProfileViewModel`, not ContentView; owning the route inside `ProfileView` (like `MemberRoute` in `LeaderboardView`) keeps the data where it is. The remaining three rows (My Pints/My Groups/Settings) keep their inert closures until Tasks 17–19.
+
+### Consequences
+- Edit Profile's logic is fully unit-tested (17 `EditProfileViewModelTests`): pre-fill, name validation bounds, change tracking (name, avatar, re-entering the original), avatar validation (valid/oversize/wrong-type), and save (writes trimmed name, uploads avatar, avatar-only doesn't rename, invalid name aborts, no-op save still dismisses).
+- `User` is now `Hashable` — a harmless widening (it was already `Equatable`) that unlocks value-based navigation carrying the whole model.
+- Avatars picked in the session render from in-memory bytes; an existing remote avatar still shows as an initials placeholder until networking (Task 26) can load it — so the screen can't yet show the *current* avatar, only a freshly chosen one.
+- **Revisit when:** Task 26 loads remote avatars (the pre-filled avatar becomes a real image, and a remove-avatar affordance may be wanted); Tasks 17–19 wire the remaining three rows.
