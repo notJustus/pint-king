@@ -15,15 +15,18 @@ struct ContentView: View {
     @State private var model: RootTabViewModel
 
     private let groupRepository: any GroupRepositoryProtocol
+    private let userRepository: any UserRepositoryProtocol
     private let leaderboardRepository: any LeaderboardRepositoryProtocol
     private let pintRepository: any PintRepositoryProtocol
 
     init(
         groupRepository: any GroupRepositoryProtocol,
+        userRepository: any UserRepositoryProtocol,
         leaderboardRepository: any LeaderboardRepositoryProtocol,
         pintRepository: any PintRepositoryProtocol
     ) {
         self.groupRepository = groupRepository
+        self.userRepository = userRepository
         self.leaderboardRepository = leaderboardRepository
         self.pintRepository = pintRepository
         _model = State(initialValue: RootTabViewModel(groupRepository: groupRepository))
@@ -48,8 +51,10 @@ struct ContentView: View {
                 .disabled(!model.canLogPint)
 
             NavigationStack {
-                Text("Profile")
-                    .navigationTitle("Profile")
+                ProfileView(
+                    userRepository: userRepository,
+                    pintRepository: pintRepository
+                )
             }
             .tabItem { Label("Profile", systemImage: "person.crop.circle") }
             .tag(RootTab.profile)
@@ -86,6 +91,7 @@ struct ContentView: View {
 #Preview {
     ContentView(
         groupRepository: MockGroupRepository(),
+        userRepository: MockUserRepository(),
         leaderboardRepository: MockLeaderboardRepository(),
         pintRepository: MockPintRepository()
     )

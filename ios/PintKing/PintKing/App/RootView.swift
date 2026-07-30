@@ -57,6 +57,7 @@ struct RootView: View {
         } else {
             ContentView(
                 groupRepository: groupRepository,
+                userRepository: userRepository,
                 leaderboardRepository: leaderboardRepository,
                 pintRepository: pintRepository
             )
