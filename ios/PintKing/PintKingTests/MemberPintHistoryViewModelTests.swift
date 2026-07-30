@@ -25,7 +25,7 @@ struct MemberPintHistoryViewModelTests {
         private(set) var lastUserId: UUID?
         private(set) var lastGroupId: UUID?
         var pintsToReturn: [PintLog]
-        private(set) var pendingPints: [PintLog] = []
+        private(set) var pendingPints: [PendingPint] = []
 
         init(pintsToReturn: [PintLog] = []) { self.pintsToReturn = pintsToReturn }
 
@@ -41,6 +41,8 @@ struct MemberPintHistoryViewModelTests {
         func getMyPints(groupId: UUID?) async throws -> [PintLog] { [] }
         func editPint(pintId: UUID, note: String?, drinkType: DrinkType?) async throws -> PintLog { fatalError("unused") }
         func deletePint(pintId: UUID) async throws {}
+        func retryPint(pintId: UUID) async throws {}
+        func discardPint(pintId: UUID) async throws {}
     }
 
     private func makeViewModel(

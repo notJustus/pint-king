@@ -275,9 +275,26 @@ struct MockRepositoriesTests {
         }
     }
 
-    @Test func pendingPintsStartsEmpty() async throws {
+    @Test func pendingPintsSeedOneOfEachStatus() async throws {
+        // The mock seeds the offline queue (Task 17) with one still-uploading and
+        // one failed pint so My Pints can exercise both badge states.
         let pint: PintRepositoryProtocol = MockPintRepository()
-        #expect(pint.pendingPints.isEmpty)
+        #expect(pint.pendingPints.contains { $0.status == .pending })
+        #expect(pint.pendingPints.contains { $0.status == .failed })
+    }
+
+    @Test func retryFlipsFailedPintBackToPending() async throws {
+        let pint: PintRepositoryProtocol = MockPintRepository()
+        let failed = pint.pendingPints.first { $0.status == .failed }!
+        try await pint.retryPint(pintId: failed.id)
+        #expect(pint.pendingPints.first { $0.id == failed.id }?.status == .pending)
+    }
+
+    @Test func discardRemovesFromTheQueue() async throws {
+        let pint: PintRepositoryProtocol = MockPintRepository()
+        let some = pint.pendingPints.first!
+        try await pint.discardPint(pintId: some.id)
+        #expect(pint.pendingPints.contains { $0.id == some.id } == false)
     }
 
     // MARK: - Leaderboard

@@ -53,6 +53,7 @@ struct ContentView: View {
             NavigationStack {
                 ProfileView(
                     userRepository: userRepository,
+                    groupRepository: groupRepository,
                     pintRepository: pintRepository
                 )
             }

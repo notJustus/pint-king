@@ -37,7 +37,16 @@ protocol PintRepositoryProtocol: AnyObject {
     /// Delete a pint. Rejected (throws) outside the 24h window (Property 19).
     func deletePint(pintId: UUID) async throws
 
-    /// Pints saved locally and not yet confirmed by the server. Shown with a
-    /// "pending" / "failed" badge in My Pints; never on the leaderboard or map.
-    var pendingPints: [PintLog] { get }
+    /// Pints saved locally and not yet confirmed by the server, each carrying its
+    /// upload status. Shown with a "pending" / "failed" badge in My Pints (Task
+    /// 17); never on the leaderboard or map (ADR-0025).
+    var pendingPints: [PendingPint] { get }
+
+    /// Re-queue a `failed` pending pint for upload (My Pints "Retry"). The real
+    /// upload retry lands with the offline queue (Task 29).
+    func retryPint(pintId: UUID) async throws
+
+    /// Drop a pending pint from the local queue without uploading (My Pints
+    /// "Discard").
+    func discardPint(pintId: UUID) async throws
 }

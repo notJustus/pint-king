@@ -231,6 +231,26 @@ enum MockData {
              lat: 51.5240, lng: -0.0950, daysAgo: 5),
     ]
 
+    // MARK: - Pending pints (offline queue)
+    //
+    // Two of the current user's pints in the local queue so My Pints (Task 17)
+    // shows both badge states: one still uploading, one that gave up after
+    // retries and offers retry / discard. The queue mechanics that produce these
+    // land with Task 29; here they're static fixtures.
+
+    static let pendingPints: [PendingPint] = [
+        PendingPint(
+            pint: pint(daveId, fridayId, note: "Uploading this one…", drink: .ale,
+                       lat: 51.5145, lng: -0.1270, daysAgo: 0),
+            status: .pending
+        ),
+        PendingPint(
+            pint: pint(daveId, officeId, note: "Bad signal in the basement.", drink: .stout,
+                       lat: nil, lng: nil, daysAgo: 0),
+            status: .failed
+        ),
+    ]
+
     // MARK: - Builders
 
     private static func member(

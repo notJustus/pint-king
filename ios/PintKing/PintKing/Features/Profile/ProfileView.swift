@@ -18,21 +18,22 @@ import SwiftUI
 struct ProfileView: View {
     @State private var model: ProfileViewModel
 
-    /// The user repository, held so it can be threaded into the Edit Profile
-    /// destination (Task 16). The view model uses its own copy for loading.
+    /// Repositories held so they can be threaded into the push destinations (Edit
+    /// Profile, My Pints). The view model uses its own copies for loading.
     private let userRepository: any UserRepositoryProtocol
+    private let groupRepository: any GroupRepositoryProtocol
+    private let pintRepository: any PintRepositoryProtocol
 
     /// Remaining sub-screen navigation hooks, injected by the parent. Inert until
-    /// Tasks 17–19 supply real destinations. Edit Profile is now wired internally
-    /// via value-based navigation (`ProfileRoute`).
-    private let onMyPints: () -> Void
+    /// Tasks 18–19 supply real destinations. Edit Profile and My Pints are wired
+    /// internally via value-based navigation (`ProfileRoute`).
     private let onMyGroups: () -> Void
     private let onSettings: () -> Void
 
     init(
         userRepository: any UserRepositoryProtocol,
+        groupRepository: any GroupRepositoryProtocol,
         pintRepository: any PintRepositoryProtocol,
-        onMyPints: @escaping () -> Void = {},
         onMyGroups: @escaping () -> Void = {},
         onSettings: @escaping () -> Void = {}
     ) {
@@ -41,7 +42,8 @@ struct ProfileView: View {
             pintRepository: pintRepository
         ))
         self.userRepository = userRepository
-        self.onMyPints = onMyPints
+        self.groupRepository = groupRepository
+        self.pintRepository = pintRepository
         self.onMyGroups = onMyGroups
         self.onSettings = onSettings
     }
@@ -55,7 +57,9 @@ struct ProfileView: View {
 
             Section {
                 editProfileRow
-                row("My Pints", systemImage: "mug", action: onMyPints)
+                NavigationLink(value: ProfileRoute.myPints) {
+                    Label("My Pints", systemImage: "mug")
+                }
                 row("My Groups", systemImage: "person.3", action: onMyGroups)
                 row("Settings", systemImage: "gearshape", action: onSettings)
             }
@@ -69,6 +73,8 @@ struct ProfileView: View {
                     // so the card reflects it after we pop back.
                     Task { await model.refresh() }
                 }
+            case .myPints:
+                MyPintsView(groupRepository: groupRepository, pintRepository: pintRepository)
             }
         }
         .task { await model.load() }
@@ -127,6 +133,7 @@ struct ProfileView: View {
 /// its `id`, so the enum is `Hashable` for free.
 private enum ProfileRoute: Hashable {
     case editProfile(User)
+    case myPints
 }
 
 /// Circular initials placeholder (real avatars arrive with networking, Task 26).
@@ -149,6 +156,7 @@ private struct AvatarCircle: View {
     NavigationStack {
         ProfileView(
             userRepository: MockUserRepository(),
+            groupRepository: MockGroupRepository(),
             pintRepository: MockPintRepository()
         )
     }
