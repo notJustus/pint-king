@@ -125,6 +125,7 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0089 | Camera photo pipeline extracted into a pure `PhotoProcessor`; `CameraModel` runs the AVCaptureSession off-main and publishes on the main actor | Accepted (revisit) |
 | 0090 | Camera screen logic behind `CameraViewModel`; permission and session driven through `CameraPermissionRequesting`/`CameraControlling` protocols so gating and shutter are unit-tested | Accepted (revisit) |
 | 0091 | Post-capture sheet is a `PostCaptureViewModel` owning optional note (280-cap)/drink type; Done logs via `createPint` and dismisses the modal; `CameraView` drives it off `capturedPhoto` | Accepted (revisit) |
+| 0092 | Shutter-time GPS behind a `LocationProviding` protocol returning `Coordinate?` (never throws); the fetch starts when the sheet appears and `save()` awaits it; real `LocationService` races `requestLocation()` against a 10s timeout | Accepted (revisit) |
 
 ---
 
@@ -2238,3 +2239,32 @@ A `@MainActor @Observable PostCaptureViewModel` owns the sheet's screen-local st
 - The "+" flow is now complete end-to-end with mock data: tap "+" → camera → shutter → sheet → Done → pint appears in the mock store (and My Pints, Task 17). 
 - `location` is passed as nil for now; Task 14 attaches the GPS coordinate captured at shutter time.
 - **Revisit when:** Task 14 threads location into `createPint`; Task 29's offline queue changes what `createPint` does with a pint (immediate upload vs local queue), which the sheet is agnostic to; and on-device testing (Task 30) verifies the sheet over a live capture.
+
+---
+
+## ADR-0092: Shutter-time GPS behind a `LocationProviding` protocol; the fetch starts with the sheet and `save()` awaits it, bounded by a 10s timeout
+
+Status: Accepted (revisit)
+Date: 2026-07-30
+
+### Context
+Task 14 (tasks-ios.md, requirements §3, l3-ios-app.md "Pint Logging Flow": "request GPS location (10s timeout, silent fail)") captures the GPS coordinate at shutter time and attaches it to the pint. A pint with no location is valid, so location must never block or error the log: a timeout, a permission denial, or any CoreLocation error all mean "log without a location." Two forces: (1) keep the post-capture view model unit-testable without `CLLocationManager` (which needs a device and a delegate callback); and (2) fetching a fix can take seconds, so the wait must not stall the Done tap for the common case.
+
+This is distinct from `LocationPermissionRequesting` (Task 7, ADR-0084/0085), which asks *may we use location?* during Profile Setup. Task 14 reads *where are we?* at shutter time. They stay separate protocols with separate implementations.
+
+### Decision
+A one-method `@MainActor protocol LocationProviding { func currentLocation() async -> Coordinate? }` — best-effort, **never throws**; nil covers timeout / denied / error uniformly. The real `LocationService` wraps a `CLLocationManager`: it early-returns nil unless authorization is `.authorizedWhenInUse`/`.authorizedAlways`, then bridges the fire-and-forget `requestLocation()` (which reports via the delegate) into an `await`ed value with a `CheckedContinuation` — mirroring `CLLocationPermission`. The twist is the timeout: `currentLocation()` runs a `withTaskGroup` that races the delegate-driven fetch against a `Task.sleep(for: .seconds(10))`; whichever resolves first wins, and a single `finishFetch(with:)` guard resumes the continuation exactly once so the loser is a no-op. `MockLocationProvider` returns a preset `Coordinate?` and counts calls.
+
+In `PostCaptureViewModel`, `startLocationFetch()` kicks off the fetch as a stored `Task<Coordinate?, Never>` when the sheet appears (via `.onAppear`) — i.e. right after the shutter — so it resolves in the background while the user edits note/drink type. It's idempotent (guards on `locationTask == nil`). `save()` calls `startLocationFetch()` defensively, `await`s `locationTask?.value`, and passes the result (coordinate or nil) straight into `createPint(…, location:)`. `CameraView` and `ContentView` thread a `LocationProviding` alongside the existing repositories.
+
+### Alternatives Considered
+- **Fetch location inside `save()` only (no eager start):** rejected — the user often taps Done within a second of the shutter, so a cold fetch there would frequently hit the full timeout; starting on sheet-appear overlaps the fetch with metadata entry, so the value is usually ready by Done.
+- **Reuse `LocationPermissionRequesting` for reads too:** rejected — permission (a decision) and location (a coordinate) are different concerns with different return types and lifetimes; one method each keeps both trivially mockable.
+- **Throw on timeout/denied and catch in the view model:** rejected — a locationless pint is a normal, expected outcome, not an error; modeling it as `Coordinate?` keeps the "silent fail" requirement in the type rather than in a catch block.
+- **Implement the timeout with `CLLocationManager` accuracy/timeout config:** rejected — `requestLocation()` has no built-in wall-clock timeout, and a task-group race is explicit, testable in principle, and independent of CoreLocation's internal retry behavior.
+
+### Consequences
+- The view model's location behavior is fully unit-tested (4 new `PostCaptureViewModelTests`, 13 total): coordinate received → attached; nil (timeout) → logged without location, no error; nil (denied) → same; and the fetch starts exactly once across repeated `startLocationFetch()` + `save()`. `LocationService`'s CoreLocation path (real delegate callback, real 10s race) is verified on-device (Task 30), like the camera hardware path.
+- The "+" flow now logs real GPS when available, feeding the map (Task 18) with coordinates instead of nil.
+- The eager fetch means a `LocationService` request may be in flight even if the user immediately dismisses the sheet to retake — harmless (the result is discarded) but it does spin up CoreLocation per sheet appearance.
+- **Revisit when:** on-device testing (Task 30) exercises the real timeout race and denied paths; the map feature (Task 18) consumes the coordinates end-to-end; and if we later want a "locating…" indicator on the sheet, the view model would need to expose the in-flight state (currently opaque).
