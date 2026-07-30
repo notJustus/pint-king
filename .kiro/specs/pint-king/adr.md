@@ -124,6 +124,7 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0088 | Leaderboard rows navigate to Member Pint History via a value-based `MemberRoute`; history view model reads the active group live | Accepted (revisit) |
 | 0089 | Camera photo pipeline extracted into a pure `PhotoProcessor`; `CameraModel` runs the AVCaptureSession off-main and publishes on the main actor | Accepted (revisit) |
 | 0090 | Camera screen logic behind `CameraViewModel`; permission and session driven through `CameraPermissionRequesting`/`CameraControlling` protocols so gating and shutter are unit-tested | Accepted (revisit) |
+| 0091 | Post-capture sheet is a `PostCaptureViewModel` owning optional note (280-cap)/drink type; Done logs via `createPint` and dismisses the modal; `CameraView` drives it off `capturedPhoto` | Accepted (revisit) |
 
 ---
 
@@ -2210,3 +2211,30 @@ Put all the branching in a `@MainActor @Observable CameraViewModel` and inject i
 - `CameraModel` gained no test-only surface beyond conforming to `CameraControlling`; the split keeps hardware out of the tested path, consistent with ADR-0089.
 - The "+" flow is now real end-to-end up to capture: tap "+" → `CameraView` (permission-gated) → shutter fires `capturePhoto()`. The post-capture sheet and `PintRepository` hand-off land in Task 13; GPS at shutter time in Task 14.
 - **Revisit when:** Task 13 adds the post-capture sheet that consumes `capturedPhoto`; Task 14 attaches location; and on-device testing (Task 30) exercises live preview + real capture and the Settings deep-link.
+
+---
+
+## ADR-0091: The post-capture sheet is a `PostCaptureViewModel` owning optional metadata; `CameraView` drives it off `capturedPhoto`
+
+Status: Accepted (revisit)
+Date: 2026-07-30
+
+### Context
+Task 13 (tasks-ios.md, requirements §3) adds the post-capture bottom sheet: after the shutter fires it shows the captured photo, an optional note (≤280 chars with a live counter), and an optional drink-type picker; "Done" hands photo + metadata to `PintRepository.createPint` and dismisses the whole camera modal. A photo-only pint is valid, so both metadata fields must be able to stay empty. Two forces: (1) keep the metadata rules (note cap, drink-type toggle, blank-note-→-nil, no-active-group guard) and the `createPint` hand-off in a unit-tested view model rather than the SwiftUI view; and (2) present the sheet only in response to a real capture, and let a dismiss (without Done) fall back to the live preview for a retake.
+
+### Decision
+A `@MainActor @Observable PostCaptureViewModel` owns the sheet's screen-local state — `note` (a `didSet` truncates to `maxNoteLength = 280` so paste can't exceed the cap), `drinkType` (set via `selectDrinkType(_:)`, which *toggles* — re-tapping the active chip clears it, since drink type is optional), plus `isSaving`/`errorMessage`/`isSaved`. The captured JPEG is a non-optional `let` input (mandatory, not screen state). The target group is *shared* state on the `GroupRepository` (l3-ios-app.md §1), so `save()` reads `activeGroup` live rather than taking a group-id param — consistent with the leaderboard/history view models. `save()` trims the note (blank → nil), calls `createPint(groupId:photoData:note:drinkType:location:)` with `location: nil` (GPS at shutter time lands in Task 14), and flips `isSaved`; no active group surfaces an inline error instead of logging.
+
+`PostCaptureSheetView` is a thin renderer (photo thumbnail from `UIImage(data:)`, note `TextField` + counter, a horizontal row of `DrinkChip`s, a Done button that shows a spinner while saving) that calls `onDone` when `isSaved` flips. `CameraView` presents it via `.sheet(item:)` keyed on a private `CapturedPhoto` (an `Identifiable` wrapper giving each capture a fresh identity), populated from an `.onChange(of: model.capturedPhoto)`. Holding the pending photo in the view's own `@State` (rather than reading it live off the model) means dismissing the sheet to retake clears it locally without the sheet immediately re-presenting. Done wires straight to `onClose`, so logging a pint tears down the camera modal and returns to the previous tab. `ContentView` threads the group + pint repositories into `CameraView`.
+
+### Alternatives Considered
+- **Present the sheet directly off `model.capturedPhoto` (no local `@State` copy):** rejected — dismissing to retake would need the model's photo cleared too, coupling the sheet's lifecycle back into `CameraModel`; a local `CapturedPhoto` decouples them and the fresh identity guarantees re-presentation even on an identical reshoot.
+- **Enforce the 280-char cap in the view (e.g. `onChange` on the field):** rejected — the cap is a rule worth testing without SwiftUI; a `didSet` on the model's `note` keeps it in the tested surface and covers paste.
+- **Pass the active group id into the view model:** rejected — the Active_Group has a single owner (the repository); reading it live matches every other Home/logging view model and avoids a stale-id path.
+- **Disable Done until a note or drink type is entered:** rejected — a photo-only pint is explicitly valid (requirements §3), so Done is always enabled once a photo exists.
+
+### Consequences
+- The sheet's logic is fully unit-tested (8 `PostCaptureViewModelTests`): the 280 cap + counter, drink-type set/toggle/replace, photo-only Done, metadata Done with note trimming, blank-note→nil, and the no-active-group guard. `PostCaptureSheetView` and the real photo rendering are exercised on-device (Task 30).
+- The "+" flow is now complete end-to-end with mock data: tap "+" → camera → shutter → sheet → Done → pint appears in the mock store (and My Pints, Task 17). 
+- `location` is passed as nil for now; Task 14 attaches the GPS coordinate captured at shutter time.
+- **Revisit when:** Task 14 threads location into `createPint`; Task 29's offline queue changes what `createPint` does with a pint (immediate upload vs local queue), which the sheet is agnostic to; and on-device testing (Task 30) verifies the sheet over a live capture.
