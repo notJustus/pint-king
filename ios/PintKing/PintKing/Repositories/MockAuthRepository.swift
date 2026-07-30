@@ -18,6 +18,10 @@ final class MockAuthRepository: AuthRepositoryProtocol {
     /// When true, the next `login()` throws instead of succeeding.
     var shouldFailLogin = false
 
+    /// When true, the next `deleteAccount()` throws instead of succeeding, so the
+    /// Settings screen's error path can be exercised without a backend.
+    var shouldFailDelete = false
+
     /// Start signed out by default; pass `authenticated: true` to skip Login in
     /// previews/tests that want to land straight on the tab bar.
     init(authenticated: Bool = false) {
@@ -34,6 +38,16 @@ final class MockAuthRepository: AuthRepositoryProtocol {
     }
 
     func logout() async throws {
+        currentUser = nil
+        isAuthenticated = false
+    }
+
+    func deleteAccount() async throws {
+        if shouldFailDelete {
+            throw APIError.serverError
+        }
+        // Same local effect as logout — clear the session so RootView returns to
+        // Login. The real repo also performs the server cascade + Keychain wipe.
         currentUser = nil
         isAuthenticated = false
     }

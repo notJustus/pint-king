@@ -25,4 +25,11 @@ protocol AuthRepositoryProtocol: AnyObject {
 
     /// Clear the session: drops `currentUser` and sets `isAuthenticated = false`.
     func logout() async throws
+
+    /// Permanently delete the signed-in user's account server-side — a full
+    /// cascade of profile, pint logs, S3 photos, and refresh tokens (see
+    /// l3-api.md §Account Deletion) — then clear the local session so RootView
+    /// returns to Login (same effect as `logout`, but irreversible). The real
+    /// implementation also clears the Keychain (Task 26).
+    func deleteAccount() async throws
 }

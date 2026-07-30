@@ -23,6 +23,12 @@ enum LocationPermissionDecision: Sendable {
 
 @MainActor
 protocol LocationPermissionRequesting: AnyObject {
+    /// The standing decision, read without prompting. The Settings screen shows
+    /// this so the user can see whether location is currently enabled. Mirrors
+    /// `CameraPermissionRequesting.status`, but collapsed to granted/denied since
+    /// Settings only reports on/off (a not-yet-asked state reads as `.denied`).
+    var status: LocationPermissionDecision { get }
+
     /// Prompt for when-in-use location access (or return the standing decision
     /// if the user has already answered). Never throws — a denial is a normal,
     /// expected outcome that must not block setup.

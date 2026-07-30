@@ -18,17 +18,23 @@ struct ContentView: View {
     private let userRepository: any UserRepositoryProtocol
     private let leaderboardRepository: any LeaderboardRepositoryProtocol
     private let pintRepository: any PintRepositoryProtocol
+    private let authRepository: any AuthRepositoryProtocol
+    private let locationPermission: any LocationPermissionRequesting
 
     init(
         groupRepository: any GroupRepositoryProtocol,
         userRepository: any UserRepositoryProtocol,
         leaderboardRepository: any LeaderboardRepositoryProtocol,
-        pintRepository: any PintRepositoryProtocol
+        pintRepository: any PintRepositoryProtocol,
+        authRepository: any AuthRepositoryProtocol,
+        locationPermission: any LocationPermissionRequesting
     ) {
         self.groupRepository = groupRepository
         self.userRepository = userRepository
         self.leaderboardRepository = leaderboardRepository
         self.pintRepository = pintRepository
+        self.authRepository = authRepository
+        self.locationPermission = locationPermission
         _model = State(initialValue: RootTabViewModel(groupRepository: groupRepository))
     }
 
@@ -54,7 +60,9 @@ struct ContentView: View {
                 ProfileView(
                     userRepository: userRepository,
                     groupRepository: groupRepository,
-                    pintRepository: pintRepository
+                    pintRepository: pintRepository,
+                    authRepository: authRepository,
+                    locationPermission: locationPermission
                 )
             }
             .tabItem { Label("Profile", systemImage: "person.crop.circle") }
@@ -94,6 +102,8 @@ struct ContentView: View {
         groupRepository: MockGroupRepository(),
         userRepository: MockUserRepository(),
         leaderboardRepository: MockLeaderboardRepository(),
-        pintRepository: MockPintRepository()
+        pintRepository: MockPintRepository(),
+        authRepository: MockAuthRepository(authenticated: true),
+        locationPermission: MockLocationPermission()
     )
 }

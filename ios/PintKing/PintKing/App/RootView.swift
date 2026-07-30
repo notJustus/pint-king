@@ -59,7 +59,9 @@ struct RootView: View {
                 groupRepository: groupRepository,
                 userRepository: userRepository,
                 leaderboardRepository: leaderboardRepository,
-                pintRepository: pintRepository
+                pintRepository: pintRepository,
+                authRepository: authRepository,
+                locationPermission: locationPermission
             )
         }
     }

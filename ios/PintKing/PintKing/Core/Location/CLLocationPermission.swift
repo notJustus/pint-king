@@ -27,6 +27,12 @@ final class CLLocationPermission: NSObject, LocationPermissionRequesting, CLLoca
         manager.delegate = self
     }
 
+    /// The standing authorization, read without prompting — `.notDetermined`
+    /// collapses to `.denied` (see `decision(for:)`).
+    var status: LocationPermissionDecision {
+        Self.decision(for: manager.authorizationStatus)
+    }
+
     func request() async -> LocationPermissionDecision {
         // If the user has already decided, don't prompt again — return the
         // standing status. `.notDetermined` is the only state that shows the

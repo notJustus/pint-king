@@ -19,23 +19,27 @@ struct ProfileView: View {
     @State private var model: ProfileViewModel
 
     /// Repositories held so they can be threaded into the push destinations (Edit
-    /// Profile, My Pints). The view model uses its own copies for loading.
+    /// Profile, My Pints, Settings). The view model uses its own copies for
+    /// loading.
     private let userRepository: any UserRepositoryProtocol
     private let groupRepository: any GroupRepositoryProtocol
     private let pintRepository: any PintRepositoryProtocol
+    private let authRepository: any AuthRepositoryProtocol
+    private let locationPermission: any LocationPermissionRequesting
 
-    /// Remaining sub-screen navigation hooks, injected by the parent. Inert until
-    /// Tasks 18–19 supply real destinations. Edit Profile and My Pints are wired
-    /// internally via value-based navigation (`ProfileRoute`).
+    /// The one remaining sub-screen navigation hook, injected by the parent.
+    /// Inert until Task 19 supplies a real destination. Edit Profile, My Pints,
+    /// and Settings are wired internally via value-based navigation
+    /// (`ProfileRoute`).
     private let onMyGroups: () -> Void
-    private let onSettings: () -> Void
 
     init(
         userRepository: any UserRepositoryProtocol,
         groupRepository: any GroupRepositoryProtocol,
         pintRepository: any PintRepositoryProtocol,
-        onMyGroups: @escaping () -> Void = {},
-        onSettings: @escaping () -> Void = {}
+        authRepository: any AuthRepositoryProtocol,
+        locationPermission: any LocationPermissionRequesting,
+        onMyGroups: @escaping () -> Void = {}
     ) {
         _model = State(initialValue: ProfileViewModel(
             userRepository: userRepository,
@@ -44,8 +48,9 @@ struct ProfileView: View {
         self.userRepository = userRepository
         self.groupRepository = groupRepository
         self.pintRepository = pintRepository
+        self.authRepository = authRepository
+        self.locationPermission = locationPermission
         self.onMyGroups = onMyGroups
-        self.onSettings = onSettings
     }
 
     var body: some View {
@@ -61,7 +66,9 @@ struct ProfileView: View {
                     Label("My Pints", systemImage: "mug")
                 }
                 row("My Groups", systemImage: "person.3", action: onMyGroups)
-                row("Settings", systemImage: "gearshape", action: onSettings)
+                NavigationLink(value: ProfileRoute.settings) {
+                    Label("Settings", systemImage: "gearshape")
+                }
             }
         }
         .navigationTitle("Profile")
@@ -75,6 +82,8 @@ struct ProfileView: View {
                 }
             case .myPints:
                 MyPintsView(groupRepository: groupRepository, pintRepository: pintRepository)
+            case .settings:
+                SettingsView(authRepository: authRepository, locationPermission: locationPermission)
             }
         }
         .task { await model.load() }
@@ -134,6 +143,7 @@ struct ProfileView: View {
 private enum ProfileRoute: Hashable {
     case editProfile(User)
     case myPints
+    case settings
 }
 
 /// Circular initials placeholder (real avatars arrive with networking, Task 26).
@@ -157,7 +167,9 @@ private struct AvatarCircle: View {
         ProfileView(
             userRepository: MockUserRepository(),
             groupRepository: MockGroupRepository(),
-            pintRepository: MockPintRepository()
+            pintRepository: MockPintRepository(),
+            authRepository: MockAuthRepository(authenticated: true),
+            locationPermission: MockLocationPermission()
         )
     }
 }

@@ -13,7 +13,9 @@ import Foundation
 @MainActor
 @Observable
 final class MockLocationPermission: LocationPermissionRequesting {
-    /// The answer `request()` will return.
+    /// The answer `request()` will return, and (for the mock) the standing
+    /// `status` — tests set this to preset "location is on/off" before showing
+    /// Settings.
     var decision: LocationPermissionDecision
 
     /// How many times `request()` has been called.
@@ -22,6 +24,10 @@ final class MockLocationPermission: LocationPermissionRequesting {
     init(decision: LocationPermissionDecision = .granted) {
         self.decision = decision
     }
+
+    /// Reading the standing status returns the same preset `decision`, without
+    /// counting as a request.
+    var status: LocationPermissionDecision { decision }
 
     func request() async -> LocationPermissionDecision {
         requestCount += 1
