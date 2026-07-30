@@ -64,7 +64,8 @@ struct ContentView: View {
                 camera: CameraModel(),
                 permission: AVCameraPermission(),
                 groupRepository: groupRepository,
-                pintRepository: pintRepository
+                pintRepository: pintRepository,
+                locationProvider: LocationService()
             ) {
                 model.isCameraPresented = false
             }

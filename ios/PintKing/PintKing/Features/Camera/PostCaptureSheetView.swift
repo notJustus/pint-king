@@ -22,12 +22,14 @@ struct PostCaptureSheetView: View {
         photoData: Data,
         groupRepository: any GroupRepositoryProtocol,
         pintRepository: any PintRepositoryProtocol,
+        locationProvider: any LocationProviding,
         onDone: @escaping () -> Void
     ) {
         _model = State(initialValue: PostCaptureViewModel(
             photoData: photoData,
             groupRepository: groupRepository,
-            pintRepository: pintRepository
+            pintRepository: pintRepository,
+            locationProvider: locationProvider
         ))
         self.onDone = onDone
     }
@@ -50,6 +52,9 @@ struct PostCaptureSheetView: View {
             }
             .navigationTitle("New Pint")
             .navigationBarTitleDisplayMode(.inline)
+            // Kick off the GPS fetch as the sheet appears (right after the
+            // shutter), so it resolves while the user fills in metadata.
+            .onAppear { model.startLocationFetch() }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) { doneButton }
             }
@@ -159,6 +164,7 @@ private struct DrinkChip: View {
         photoData: Data(),
         groupRepository: MockGroupRepository(),
         pintRepository: MockPintRepository(),
+        locationProvider: MockLocationProvider(),
         onDone: {}
     )
 }

@@ -12,7 +12,13 @@
 //  Like the other screen view models this owns only screen-local state; the pint
 //  lives on the PintRepository. The target group is *shared* state on the
 //  GroupRepository (l3-ios-app.md §1), so it's read live rather than passed in.
-//  Location is deliberately omitted here — GPS-at-shutter-time lands in Task 14.
+//
+//  Location (Task 14): the GPS fetch starts as soon as the sheet appears — i.e.
+//  right after the shutter — via `startLocationFetch()`, running in the background
+//  while the user fills in note/drink type. `save()` awaits that in-flight fetch
+//  (already resolved in the common case), attaching the coordinate if one arrived
+//  and silently omitting it on timeout / denied / error. A locationless pint is
+//  valid, so location never blocks or errors the save.
 //
 
 import Foundation
@@ -55,15 +61,32 @@ final class PostCaptureViewModel {
 
     private let groupRepository: any GroupRepositoryProtocol
     private let pintRepository: any PintRepositoryProtocol
+    private let locationProvider: any LocationProviding
+
+    /// The in-flight GPS fetch kicked off when the sheet appears. `save()` awaits
+    /// it so the coordinate (if any) is attached to the pint. nil until started.
+    private var locationTask: Task<Coordinate?, Never>?
 
     init(
         photoData: Data,
         groupRepository: any GroupRepositoryProtocol,
-        pintRepository: any PintRepositoryProtocol
+        pintRepository: any PintRepositoryProtocol,
+        locationProvider: any LocationProviding
     ) {
         self.photoData = photoData
         self.groupRepository = groupRepository
         self.pintRepository = pintRepository
+        self.locationProvider = locationProvider
+    }
+
+    /// Begin the best-effort GPS fetch. Called when the sheet appears (right after
+    /// the shutter) so location resolves in the background while the user edits
+    /// metadata. Idempotent — a second call is a no-op, keeping the first fetch.
+    func startLocationFetch() {
+        guard locationTask == nil else { return }
+        locationTask = Task { [locationProvider] in
+            await locationProvider.currentLocation()
+        }
     }
 
     /// Characters left before the cap — drives the counter under the note field.
@@ -91,6 +114,12 @@ final class PostCaptureViewModel {
         isSaving = true
         defer { isSaving = false }
 
+        // Await the fetch started when the sheet appeared. If nothing kicked it
+        // off (defensive), start it now. A nil result — timeout, denied, error —
+        // just means no location, which is fine.
+        startLocationFetch()
+        let location = await locationTask?.value ?? nil
+
         let trimmed = note.trimmingCharacters(in: .whitespacesAndNewlines)
         do {
             _ = try await pintRepository.createPint(
@@ -98,7 +127,7 @@ final class PostCaptureViewModel {
                 photoData: photoData,
                 note: trimmed.isEmpty ? nil : trimmed,
                 drinkType: drinkType,
-                location: nil   // GPS at shutter time lands in Task 14
+                location: location
             )
             isSaved = true
         } catch {

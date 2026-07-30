@@ -27,6 +27,7 @@ struct CameraView: View {
 
     private let groupRepository: any GroupRepositoryProtocol
     private let pintRepository: any PintRepositoryProtocol
+    private let locationProvider: any LocationProviding
     let onClose: () -> Void
 
     init(
@@ -34,11 +35,13 @@ struct CameraView: View {
         permission: any CameraPermissionRequesting,
         groupRepository: any GroupRepositoryProtocol,
         pintRepository: any PintRepositoryProtocol,
+        locationProvider: any LocationProviding,
         onClose: @escaping () -> Void
     ) {
         _model = State(initialValue: CameraViewModel(camera: camera, permission: permission))
         self.groupRepository = groupRepository
         self.pintRepository = pintRepository
+        self.locationProvider = locationProvider
         self.onClose = onClose
     }
 
@@ -68,6 +71,7 @@ struct CameraView: View {
                 photoData: photo.data,
                 groupRepository: groupRepository,
                 pintRepository: pintRepository,
+                locationProvider: locationProvider,
                 onDone: onClose   // logging a pint closes the whole camera modal
             )
         }

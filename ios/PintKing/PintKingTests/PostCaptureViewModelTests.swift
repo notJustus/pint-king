@@ -20,12 +20,15 @@ struct PostCaptureViewModelTests {
 
     private func make(
         group: MockGroupRepository? = nil,
-        pint: MockPintRepository? = nil
+        pint: MockPintRepository? = nil,
+        location: MockLocationProvider? = nil
     ) -> (PostCaptureViewModel, MockGroupRepository, MockPintRepository) {
         let group = group ?? MockGroupRepository()
         let pint = pint ?? MockPintRepository()
+        let location = location ?? MockLocationProvider()
         let vm = PostCaptureViewModel(
-            photoData: photo, groupRepository: group, pintRepository: pint
+            photoData: photo, groupRepository: group, pintRepository: pint,
+            locationProvider: location
         )
         return (vm, group, pint)
     }
@@ -113,5 +116,53 @@ struct PostCaptureViewModelTests {
         // Nothing new logged for the current user across all groups.
         let after = (try? await pint.getMyPints(groupId: nil))?.count ?? 0
         #expect(after == before)
+    }
+
+    // MARK: - Location (Task 14)
+
+    @Test func locationReceivedIsAttachedToPint() async {
+        let coordinate = Coordinate(latitude: 51.5, longitude: -0.12)
+        let location = MockLocationProvider(location: coordinate)
+        let (vm, group, pint) = make(location: location)
+        await vm.save()
+
+        #expect(vm.isSaved)
+        #expect(location.requestCount == 1)
+        let newest = try? await pint.getMyPints(groupId: group.activeGroup?.id).first
+        #expect(newest?.location == coordinate)
+    }
+
+    @Test func locationTimeoutLogsPintWithoutLocationAndNoError() async {
+        // nil stands in for the 10s timeout the real service maps to no location.
+        let location = MockLocationProvider(location: nil)
+        let (vm, group, pint) = make(location: location)
+        await vm.save()
+
+        #expect(vm.isSaved)
+        #expect(vm.errorMessage == nil)
+        let newest = try? await pint.getMyPints(groupId: group.activeGroup?.id).first
+        #expect(newest?.location == nil)
+    }
+
+    @Test func locationDeniedLogsPintWithoutLocationAndNoError() async {
+        // A denied permission also surfaces as nil from the provider.
+        let location = MockLocationProvider(location: nil)
+        let (vm, group, pint) = make(location: location)
+        await vm.save()
+
+        #expect(vm.isSaved)
+        #expect(vm.errorMessage == nil)
+        let newest = try? await pint.getMyPints(groupId: group.activeGroup?.id).first
+        #expect(newest?.location == nil)
+    }
+
+    @Test func locationFetchIsStartedOnlyOnce() async {
+        let location = MockLocationProvider(location: Coordinate(latitude: 1, longitude: 2))
+        let (vm, _, _) = make(location: location)
+        vm.startLocationFetch()
+        vm.startLocationFetch()
+        await vm.save()   // also calls startLocationFetch defensively
+
+        #expect(location.requestCount == 1)
     }
 }
