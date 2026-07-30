@@ -57,11 +57,14 @@ struct ContentView: View {
         .fullScreenCover(isPresented: $model.isCameraPresented) {
             // A fresh camera stack per presentation: the CameraModel owns an
             // AVCaptureSession we want built up on open and torn down on close, so
-            // it's created here (not held for the app's lifetime). The post-capture
-            // sheet + repository hand-off land in Task 13.
+            // it's created here (not held for the app's lifetime). The group +
+            // pint repositories are threaded through for the post-capture sheet's
+            // createPint hand-off (Task 13).
             CameraView(
                 camera: CameraModel(),
-                permission: AVCameraPermission()
+                permission: AVCameraPermission(),
+                groupRepository: groupRepository,
+                pintRepository: pintRepository
             ) {
                 model.isCameraPresented = false
             }

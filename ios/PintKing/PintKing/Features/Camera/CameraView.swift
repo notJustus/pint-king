@@ -10,19 +10,35 @@
 //  (the simulator has no camera), so this view's happy path is verified on-device;
 //  the gating and shutter-triggers-capture logic are unit-tested on the view model.
 //
+//  Once a shot is captured (`capturedPhoto` becomes non-nil) the post-capture
+//  sheet slides up over the preview to collect optional note/drink type; its Done
+//  logs the pint and dismisses the whole camera modal (Task 13).
+//
 
 import SwiftUI
 
 struct CameraView: View {
     @State private var model: CameraViewModel
+
+    /// The just-captured photo, surfaced to drive the post-capture sheet. Held in
+    /// local state (not read live off the model) so dismissing the sheet to retake
+    /// clears it here without the sheet immediately re-presenting.
+    @State private var pendingPhoto: CapturedPhoto?
+
+    private let groupRepository: any GroupRepositoryProtocol
+    private let pintRepository: any PintRepositoryProtocol
     let onClose: () -> Void
 
     init(
         camera: any CameraControlling,
         permission: any CameraPermissionRequesting,
+        groupRepository: any GroupRepositoryProtocol,
+        pintRepository: any PintRepositoryProtocol,
         onClose: @escaping () -> Void
     ) {
         _model = State(initialValue: CameraViewModel(camera: camera, permission: permission))
+        self.groupRepository = groupRepository
+        self.pintRepository = pintRepository
         self.onClose = onClose
     }
 
@@ -43,6 +59,18 @@ struct CameraView: View {
         .overlay(alignment: .topLeading) { closeButton }
         .task { await model.onAppear() }
         .onDisappear { model.onDisappear() }
+        // A fresh capture opens the post-capture sheet.
+        .onChange(of: model.capturedPhoto) { _, photo in
+            if let photo { pendingPhoto = CapturedPhoto(data: photo) }
+        }
+        .sheet(item: $pendingPhoto) { photo in
+            PostCaptureSheetView(
+                photoData: photo.data,
+                groupRepository: groupRepository,
+                pintRepository: pintRepository,
+                onDone: onClose   // logging a pint closes the whole camera modal
+            )
+        }
     }
 
     // MARK: - Camera (granted)
@@ -128,4 +156,12 @@ struct CameraView: View {
             return "That photo was too large. Try another shot."
         }
     }
+}
+
+/// Wraps the captured JPEG in an `Identifiable` so it can drive `.sheet(item:)`.
+/// A new capture gets a new identity, re-presenting the sheet even if the bytes
+/// happen to match a prior shot.
+private struct CapturedPhoto: Identifiable {
+    let id = UUID()
+    let data: Data
 }
