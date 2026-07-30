@@ -122,6 +122,7 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0086 | Group switcher reads Active_Group live from the repository (shared state), caching only the fetched group list | Accepted (revisit) |
 | 0087 | Leaderboard view model derives active/former split and crown from the fetched board; Home composes switcher + leaderboard | Accepted (revisit) |
 | 0088 | Leaderboard rows navigate to Member Pint History via a value-based `MemberRoute`; history view model reads the active group live | Accepted (revisit) |
+| 0089 | Camera photo pipeline extracted into a pure `PhotoProcessor`; `CameraModel` runs the AVCaptureSession off-main and publishes on the main actor | Accepted (revisit) |
 
 ---
 
@@ -2151,3 +2152,30 @@ Navigation is **value-based**: `LeaderboardView` wraps every row (active *and* f
 - The leaderboard is finally interactive — `HomeView`'s `NavigationStack` (dormant since ADR-0087) now has a destination, closing that ADR's revisit note.
 - Pint photos are placeholders; real images (thumbnail + full-size) arrive with Task 26.
 - **Revisit when:** the networking layer (Task 26) loads real photos and replaces the silent `try?` with a real loading/error path; and if a future task needs a richer per-pint detail, the `.sheet` may become a pushed destination.
+
+---
+
+## ADR-0089: The camera photo pipeline is a pure `PhotoProcessor`; `CameraModel` runs the AVCaptureSession off-main and publishes on the main actor
+
+Status: Accepted (revisit)
+Date: 2026-07-30
+
+### Context
+Task 11 (tasks-ios.md, l3-ios-app.md §5) builds the `@Observable CameraModel`: it must own an `AVCaptureSession` (rear camera + `AVCapturePhotoOutput`), start/stop it, capture a still, and process that still into an upload-ready photo — HEIC→JPEG conversion, compress down to the 10 MB cap, error if it still doesn't fit (design Property 6, mirrored client-side in ADR-0015/0080). The task is explicit that the capture *session* needs real hardware and can't be unit-tested, so only the *processing logic* should be tested. Two forces: (1) keep the tested logic free of AVFoundation, and (2) `AVCaptureSession`'s `beginConfiguration`/`startRunning`/`stopRunning` are blocking calls Apple forbids on the main thread, yet the model is `@MainActor @Observable` so its published state must mutate on the main actor.
+
+### Decision
+Split the stack in two. `PhotoProcessor` (a pure `enum` namespace, like `ImageValidator`) holds `process(_:maxBytes:) throws -> Data`: decode the raw bytes to a `CGImage` (`CGImageSourceCreateWithData`, throwing `.decodeFailed` for non-images), then re-encode to JPEG via `CGImageDestination` walking a fixed quality ladder `[0.9, 0.7, 0.5, 0.3]` best-first, returning the first result within `maxBytes` and throwing `.tooLargeAfterCompression` if even the lowest rung overshoots. It **always** re-encodes to JPEG rather than passing a small input through untouched — collapsing "convert HEIC→JPEG" and "compress" into one pass, and the server stores only JPEG/PNG anyway. `maxBytes` defaults to `ImageAsset.pintPhoto.maxBytes` (the shared 10 MB constant, so the client pre-check and the API agree) and is injectable so the "still too large" path is deterministic in a test.
+
+`CameraModel` (`@MainActor @Observable final class: NSObject`, needed to be an `AVCapturePhotoCaptureDelegate`) is the thin hardware wrapper. `session`, `photoOutput`, and a private serial `sessionQueue` are `nonisolated`; the blocking configure/start/stop calls run on `sessionQueue`, and every mutation of observable state (`capturedPhoto`, `captureError`, `isSessionRunning`) hops back with `Task { @MainActor in … }`. The capture delegate pulls the container bytes off the delegate thread, then on the main actor runs `PhotoProcessor` and publishes a JPEG or a typed `CameraError`. Added `INFOPLIST_KEY_NSCameraUsageDescription` to both build configs (mirrors the location key from Task 7).
+
+### Alternatives Considered
+- **Keep all processing inside `CameraModel`:** rejected — it would drag AVFoundation and the `@MainActor` session into the one piece worth testing; a free function tests HEIC→JPEG, the compression ladder, and the size-error path with `ImageIO`-built fixtures and no simulator camera.
+- **Pass a small input through untouched, only compress when over-limit:** rejected — a real iPhone capture is HEIC, which must be re-encoded regardless, so a single always-JPEG path is simpler and has no worse output for already-small images.
+- **`@preconcurrency import AVFoundation` to silence the non-`Sendable` capture warnings:** rejected — `AVCaptureSession` serialises its own access and the serial-queue pattern is the documented approach; leaving the warnings visible keeps the compromise honest rather than blanket-suppressed.
+- **Run the session work on the main actor:** rejected — Apple explicitly warns the blocking session calls must not run on the main thread; the `nonisolated` serial queue is the standard fix.
+
+### Consequences
+- The photo pipeline is fully unit-tested (7 `PhotoProcessorTests`, including a real HEIC→JPEG round-trip that skips cleanly where HEIC encoding is unavailable); `CameraModel`'s hardware path is implemented but verified on-device (Task 12/30), consistent with the task's note.
+- The 10 MB cap lives in one place (`ImageAsset`), shared by `ImageValidator` (pre-upload check) and `PhotoProcessor` (capture compression).
+- Non-`Sendable` capture warnings remain on the session-queue closures — accepted, not suppressed.
+- **Revisit when:** Task 12 adds the live preview (`UIViewRepresentable` over the exposed `session`), the shutter UI, and the camera-permission explanation screen; Task 14 attaches GPS at shutter time; and on-device testing (Task 30) exercises the real capture path.
