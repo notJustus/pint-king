@@ -121,6 +121,7 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0085 | Profile Setup gated in `RootView` by a session-local `didCompleteSetup` flag; view model owns no persisted profile state | Accepted (revisit) |
 | 0086 | Group switcher reads Active_Group live from the repository (shared state), caching only the fetched group list | Accepted (revisit) |
 | 0087 | Leaderboard view model derives active/former split and crown from the fetched board; Home composes switcher + leaderboard | Accepted (revisit) |
+| 0088 | Leaderboard rows navigate to Member Pint History via a value-based `MemberRoute`; history view model reads the active group live | Accepted (revisit) |
 
 ---
 
@@ -2123,3 +2124,30 @@ The Home tab is composed by a new `HomeView`: it branches on `groupRepository.ac
 - The Home tab is finally live end-to-end: switcher in the title, ranked board below, empty state for a groupless user — the composition ADR-0086 deferred.
 - Avatars are initials placeholders for now (`InitialsGenerator`); leaderboard rows carry an `avatarUrl` path, but loading remote images needs the networking layer, so real avatars land with Task 26.
 - **Revisit when:** the networking layer (Task 26) replaces the silent `try?` with a real loading/error path; and Task 10 (member pint history) adds row navigation off the leaderboard, at which point `HomeView`'s `NavigationStack` gains destinations.
+
+---
+
+## ADR-0088: Leaderboard rows navigate to Member Pint History via a value-based route; the history view model reads the active group live
+
+Status: Accepted (revisit)
+Date: 2026-07-30
+
+### Context
+Task 10 (tasks-ios.md, l3-ios-app.md §Screens/§Navigation) adds the Member Pint History screen: tapping a member on the leaderboard shows the pints that member logged **in the active group** — photo thumbnail, note, drink type, timestamp inline, no separate detail screen, with a tap-to-view-full-size photo. Two questions had to be settled: how a leaderboard row triggers navigation (ADR-0087 left `HomeView`'s `NavigationStack` without destinations), and which group + member the history fetches for. The pint fetch already exists — `PintRepositoryProtocol.getPintsForMember(userId:groupId:)`.
+
+### Decision
+`MemberPintHistoryViewModel` (`@MainActor @Observable`) owns only screen-local state — the fetched `pints` (newest first, as the repository returns them) and an `isLoading` flag — plus two immutable inputs fixed for the screen's lifetime: `userId` (the fetch key) and `memberName` (the title). It reads the Active_Group **live** from `groupRepository.activeGroup` rather than taking a group id, the same shared-state rule as the leaderboard (ADR-0086/0087): the history is always for the group currently on screen. `load()` clears the list with no active group, otherwise fetches with a silent `try?` (no error affordance until Task 26); `hasPints` drives the empty state; `refresh()` is a pull-to-refresh alias. Skeletons show only on the first load (`isLoading && !hasPints`).
+
+Navigation is **value-based**: `LeaderboardView` wraps every row (active *and* former — former members retain pints, Property 23) in a `NavigationLink(value:)` carrying a small private `MemberRoute { userId, name }`, and declares one `.navigationDestination(for: MemberRoute.self)` that builds `MemberPintHistoryView`. `MemberRoute` — not `LeaderboardEntry` — is the nav value, so the route stays a two-field key decoupled from the leaderboard DTO (and the DTO needn't become `Hashable`). `pintRepository` is threaded `PintKingApp → RootView → ContentView → HomeView → LeaderboardView` alongside the existing session repositories. Pint photos are `SF Symbol` placeholders (thumbnail + full-size sheet) until the networking layer loads remote images (Task 26), mirroring the avatar-placeholder convention. The full-size viewer is a `.sheet(item:)` keyed on the tapped `PintLog` (already `Identifiable`).
+
+### Alternatives Considered
+- **Use `LeaderboardEntry` as the navigation value:** rejected — it would force `Hashable` onto the wire DTO and couple navigation to a richer type than the destination needs; a two-field `MemberRoute` is the minimal key.
+- **Pass the group id into the history view model:** rejected for the same reason as the leaderboard (ADR-0087) — reading `activeGroup` through the repository keeps one source of truth and can't go stale.
+- **Only active members tappable:** rejected — former members' pints are retained and shown on the board (Property 23), so their history is just as valid to open.
+- **A push/`NavigationDestination` detail screen for a single pint:** rejected — the design specifies inline entries with an in-place full-size photo view, so a `.sheet` over the list suffices; no per-pint detail route.
+
+### Consequences
+- The screen is a pure renderer over a testable view model: the fetch key (member + live active group), the content, the empty state, and refresh are all verified without the simulator UI (6 `MemberPintHistoryViewModelTests`).
+- The leaderboard is finally interactive — `HomeView`'s `NavigationStack` (dormant since ADR-0087) now has a destination, closing that ADR's revisit note.
+- Pint photos are placeholders; real images (thumbnail + full-size) arrive with Task 26.
+- **Revisit when:** the networking layer (Task 26) loads real photos and replaces the silent `try?` with a real loading/error path; and if a future task needs a richer per-pint detail, the `.sheet` may become a pushed destination.
