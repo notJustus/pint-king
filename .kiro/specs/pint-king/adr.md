@@ -131,6 +131,7 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0095 | My Pints splits into `MyPintsViewModel` + `EditPintViewModel`; upload status modelled as a `PendingPint` on the repo; 24h delete window enforced by the repo, UI-gated by an injected clock | Accepted (revisit) |
 | 0096 | Settings screen: account deletion delegates to `AuthRepository.deleteAccount()` (session-clear returns to Login via the RootView gate); the location row is read-only, reflecting a new `status` on `LocationPermissionRequesting` and deep-linking to iOS Settings | Accepted (revisit) |
 | 0097 | Group list fetch returns a new `GroupSummary` (role + memberCount, matching GET /groups) instead of `Group`; Group List navigates value-based via `ProfileRoute.groupList` with inert Create/Join/Detail closures | Accepted (revisit) |
+| 0098 | Create Group is a self-presented sheet owned by each entry point (Group List + Home switcher); success relies on the repo's active-group side effect for navigation | Accepted (revisit) |
 
 ---
 
@@ -2421,3 +2422,32 @@ Task 19 (tasks-ios.md, l3-ios-app.md §"Group List") builds the list of every gr
 - `getGroups()` changed shape, a protocol-level change: the mock and both callers (switcher, My Pints) were updated in lockstep; the real `NetworkGroupRepository` (Task 26) will decode `GroupResponse` straight into `GroupSummary`.
 - Three group shapes now coexist (`Group`, `GroupSummary`, `GroupDetail`), one per endpoint — more types, but each is a faithful, minimal DTO with no unused fields.
 - **Revisit when:** Tasks 20–22 supply the real Create / Join / Detail destinations (the inert closures / `onSelect` get wired, likely to `.groupList`-adjacent `ProfileRoute` cases or a create/join sheet); Task 26 wires the real fetch and may add a fetch-error affordance.
+
+---
+
+## ADR-0098: Create Group is a self-presenting sheet owned by each entry point; successful creation navigates via the repository's active-group side effect, not a callback
+
+Status: Accepted (revisit)
+Date: 2026-07-31
+
+### Context
+Task 20 (tasks-ios.md, requirements §5.1–5.2, l3-ios-app.md §"Group Management") builds the Create Group form: a name field (1–50 chars), a Create action that calls `GroupRepository.createGroup(name:)`, and — per requirements §5.2 — a message when the user hits the 99-group limit. Two entry points already exist and had inert `onCreate` closures waiting for this task: the Group List screen's toolbar/empty-state Create (ADR-0097) and the Home group switcher's empty-state Create (Task 8). Two questions: where does the sheet live, and how does the app navigate to Home once the group exists (requirements: "new group set as Active_Group, navigate to Home")?
+
+### Decision
+**`CreateGroupViewModel` owns only screen-local state.** `name`, `isCreating`, `errorMessage`, `isCreated` — the created group and the active-group change live on the `GroupRepository`. Name validation mirrors `EditProfileViewModel`'s shape exactly (a `trimmedName` computed off the bound field, checked against a `nameRange`); the only difference is the range is `1...50` (group name) vs `1...30` (display name). `create()` aborts before any repo call if the name is invalid, otherwise calls `createGroup(trimmedName)` and flips `isCreated`. It maps a thrown `APIError.validationFailed` to the 99-group-limit message and everything else to a generic line.
+
+**The sheet is self-presenting and owned by each entry point, not handed up a closure chain.** `CreateGroupView` wraps its own `NavigationStack` with a Cancel (`.cancellationAction`, via `@Environment(\.dismiss)`) and a nav-bar Create (`.confirmationAction`, spinner while creating, disabled unless valid) — the same toolbar shape as `EditProfileView`. Both `GroupListView` and `GroupSwitcherView` drop their `onCreate: () -> Void` init parameter, retain the `groupRepository`, and present the sheet from a local `@State private var isCreatingGroup` toggled by a private `onCreate()` method. So the sheet's repository dependency is satisfied where the sheet is shown, not threaded from `ContentView`.
+
+**Navigation to Home is a free consequence of the active-group side effect.** `createGroup` (mock and real API) sets the new group as the `activeGroup`. The Home tab (`HomeView`) and switcher both read `groupRepository.activeGroup` live (shared state, single owner — ADR-0086), so once the sheet dismisses, an empty Home re-renders into the leaderboard on its own. `CreateGroupView`'s `onCreated` callback therefore only dismisses the sheet (and refreshes the Group List so the new row appears) — it performs **no** tab switch or navigation, mirroring how account deletion relies on the auth gate rather than an explicit nav call (ADR-0096).
+
+### Alternatives Considered
+- **Keep `onCreate` as a closure threaded from `ContentView` (present the sheet at the root):** rejected — the sheet is a local modal of each screen, and routing its presentation up to `ContentView` just to inject the repository (which each screen already holds) adds a nav path with no benefit. Self-presentation keeps the dependency local.
+- **A value-based `NavigationLink` push instead of a sheet:** rejected — Create is a quick, cancellable, single-field task and the switcher's empty state isn't inside a `NavigationStack` it controls; a modal sheet is the lighter, consistent fit and matches the "quick form" feel.
+- **An explicit "switch to Home tab" call on success:** rejected — the active-group change already re-renders Home; from Group List (a Profile-tab push) the user expects to stay put and see the new group in the list, not be yanked to Home. Letting shared state drive the UI avoids a second, drift-prone navigation path.
+- **A dedicated `.groupLimitReached` APIError case:** rejected — the API returns 422 for the limit, which already maps to `.validationFailed`; the VM's `message(for:)` translates that to the limit copy. A bespoke case would duplicate the status mapping.
+
+### Consequences
+- 9 new `CreateGroupViewModelTests` (name validation bounds, create-sets-active, whitespace trimmed, invalid-name aborts without a repo call, forced-failure surfaces an error, `isCreating` resets). Full suite **231 pass**.
+- `GroupListView` and `GroupSwitcherView` lost their `onCreate` init parameter; no external caller passed one (both were defaulted `{}`), so no call sites changed. Their `onJoin` closures remain inert until Task 21.
+- `MockGroupRepository` gained a `shouldFailCreate` knob (mirrors `shouldFailLogin`/`shouldFailDelete`) so the limit path is testable without a backend.
+- **Revisit when:** Task 21 (Join Group) may want the same self-presenting-sheet treatment for its own entry points; Task 26 wires the real `createGroup` and may distinguish the 99-limit 422 from other validation failures (e.g. a name the server rejects) with more specific copy.
