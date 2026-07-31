@@ -22,6 +22,11 @@ final class MockGroupRepository: GroupRepositoryProtocol {
     /// the mock signed-in user). Used to decide leave/fallback behaviour.
     private let currentUserId: UUID
 
+    /// When true, the next `createGroup(name:)` throws `.validationFailed` instead
+    /// of succeeding, standing in for the API's 99-group limit (requirements §5.2)
+    /// so the Create Group screen's error path can be exercised without a backend.
+    var shouldFailCreate = false
+
     init(
         groups: [Group] = MockData.groups,
         activeGroupId: UUID? = MockData.currentUser.activeGroupId,
@@ -54,6 +59,9 @@ final class MockGroupRepository: GroupRepositoryProtocol {
     }
 
     func createGroup(name: String) async throws -> Group {
+        if shouldFailCreate {
+            throw APIError.validationFailed
+        }
         let group = Group(
             id: UUID(), name: name, inviteCode: Self.randomInviteCode(),
             createdBy: currentUserId, createdAt: MockData.now

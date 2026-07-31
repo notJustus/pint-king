@@ -18,8 +18,14 @@ import SwiftUI
 struct GroupListView: View {
     @State private var model: GroupListViewModel
 
-    /// Opens Create Group (Task 20).
-    private let onCreate: () -> Void
+    /// True while the Create Group sheet is presented (Task 20). Owned here rather
+    /// than handed up as a closure because the sheet is this screen's own modal and
+    /// needs the same `groupRepository`.
+    @State private var isCreatingGroup = false
+
+    /// The repository, retained so it can be threaded into the Create Group sheet.
+    private let groupRepository: any GroupRepositoryProtocol
+
     /// Opens Join Group (Task 21).
     private let onJoin: () -> Void
     /// Opens Group Detail for the tapped group (Task 22).
@@ -27,15 +33,17 @@ struct GroupListView: View {
 
     init(
         groupRepository: any GroupRepositoryProtocol,
-        onCreate: @escaping () -> Void = {},
         onJoin: @escaping () -> Void = {},
         onSelect: @escaping (GroupSummary) -> Void = { _ in }
     ) {
         _model = State(initialValue: GroupListViewModel(groupRepository: groupRepository))
-        self.onCreate = onCreate
+        self.groupRepository = groupRepository
         self.onJoin = onJoin
         self.onSelect = onSelect
     }
+
+    /// Opens the Create Group sheet.
+    private func onCreate() { isCreatingGroup = true }
 
     var body: some View {
         List {
@@ -72,6 +80,14 @@ struct GroupListView: View {
         }
         .task { await model.load() }
         .refreshable { await model.refresh() }
+        .sheet(isPresented: $isCreatingGroup) {
+            CreateGroupView(groupRepository: groupRepository) {
+                // New group created (and set active); dismiss the sheet and refresh
+                // so it appears in the list.
+                isCreatingGroup = false
+                Task { await model.refresh() }
+            }
+        }
     }
 
     /// One group row: name + member count, with an admin badge when the user is

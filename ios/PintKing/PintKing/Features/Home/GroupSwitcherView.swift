@@ -17,20 +17,28 @@ import SwiftUI
 struct GroupSwitcherView: View {
     @State private var model: GroupSwitcherViewModel
 
-    /// Invoked from the empty state's "Create" button (Group creation, Task 20).
-    private let onCreate: () -> Void
+    /// True while the Create Group sheet is presented (Task 20). Owned here for the
+    /// same reason as the Group List screen: the sheet is this screen's own modal
+    /// and needs the same `groupRepository`.
+    @State private var isCreatingGroup = false
+
+    /// The repository, retained so it can be threaded into the Create Group sheet.
+    private let groupRepository: any GroupRepositoryProtocol
+
     /// Invoked from the empty state's "Join" button (Group join, Task 21).
     private let onJoin: () -> Void
 
     init(
         groupRepository: any GroupRepositoryProtocol,
-        onCreate: @escaping () -> Void = {},
         onJoin: @escaping () -> Void = {}
     ) {
         _model = State(initialValue: GroupSwitcherViewModel(groupRepository: groupRepository))
-        self.onCreate = onCreate
+        self.groupRepository = groupRepository
         self.onJoin = onJoin
     }
+
+    /// Opens the Create Group sheet.
+    private func onCreate() { isCreatingGroup = true }
 
     var body: some View {
         SwiftUI.Group {
@@ -41,6 +49,14 @@ struct GroupSwitcherView: View {
             }
         }
         .task { await model.load() }
+        .sheet(isPresented: $isCreatingGroup) {
+            CreateGroupView(groupRepository: groupRepository) {
+                // New group created (and set active); dismiss the sheet. The
+                // switcher reads the active group live, so Home re-renders on its own.
+                isCreatingGroup = false
+                Task { await model.load() }
+            }
+        }
     }
 
     /// The active-group label as a Menu button; the menu lists all groups with a
