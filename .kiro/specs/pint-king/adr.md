@@ -133,6 +133,7 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0097 | Group list fetch returns a new `GroupSummary` (role + memberCount, matching GET /groups) instead of `Group`; Group List navigates value-based via `ProfileRoute.groupList` with inert Create/Join/Detail closures | Accepted (revisit) |
 | 0098 | Create Group is a self-presented sheet owned by each entry point (Group List + Home switcher); success relies on the repo's active-group side effect for navigation | Accepted (revisit) |
 | 0099 | Join flow is two screens: local format validation on code entry, with the join (and all of 404/409/403) performed on the confirmation screen — which shows the invite code, not the group name, as no API resolves a code before joining | Accepted (revisit) |
+| 0100 | Group Detail derives the caller's role from the freshly-loaded member list (not the `GroupSummary` that opened it); the three leave outcomes are a `LeaveOutcome` enum computed client-side and gated in `leave()`; the group list refreshes on the destination's `onDisappear` | Accepted (revisit) |
 
 ---
 
@@ -2488,3 +2489,43 @@ That copy needs a group *name* before the user has joined — but the API expose
 - `MockGroupRepository.joinGroup` gained a 403 case via a new `MockData.blockedInviteCode` ("BLOCKED1"), so all three of Property 11's failures are reachable without a backend. The 409 needs no knob — any existing group's code produces it naturally.
 - `GroupListView` and `GroupSwitcherView` are now closure-free for group creation/joining; `GroupListView`'s only remaining inert closure is `onSelect` (Group Detail, Task 22).
 - **Revisit when:** Task 24 (deep links) lands on this same confirmation screen and may make the missing name more visible — that is the point to decide whether the API grows an authenticated, rate-limited code-preview endpoint. If it does, only `JoinConfirmationViewModel` changes (fetch a name on appear); the flow's shape stays.
+
+
+---
+
+## ADR-0100: Group Detail derives role from the loaded member list; the three leave outcomes are a client-side `LeaveOutcome` enum; the group list refreshes on the destination's disappearance
+
+Status: Accepted (revisit)
+Date: 2026-08-01
+
+### Context
+Task 22 (tasks-ios.md, requirements §5.11–5.13 and §5.17–5.18, l3-ios-app.md §"Leave Group", Property 15) builds the Group Detail screen: the member list, the three admin actions (remove member, promote to admin, rename group), and Leave Group. Three questions came up that the task list does not settle.
+
+1. **Where does "am I an admin?" come from?** The screen is entered from the Group List, whose row is a `GroupSummary` already carrying the caller's `role` (ADR-0097). But this screen is the one place that *changes* roles, and the summary is a snapshot of a list fetched earlier.
+2. **How is the three-way leave decision made?** The design specifies three distinct prompts (promote-someone-first / leaving-deletes-the-group / plain confirmation), and the API independently enforces the same rule (Property 15: a sole admin with other members cannot leave). The client must decide *which prompt to show* before it can call anything.
+3. **How does the Group List learn that a rename, removal, or leave happened?** `.task` runs once and does not re-run when a pushed screen pops back.
+
+### Decision
+**The `GroupSummary` seeds only the title; role comes from the loaded members.** `GroupDetailViewModel.init` takes the whole `GroupSummary` but keeps just `groupId` (the fetch key) and `groupName` (so the nav bar renders immediately rather than blank) — the same split as `MemberPintHistoryViewModel`'s `userId` + `memberName` (ADR-0088). `isAdmin` is derived from the freshly-loaded `GroupDetail.members` matched against the signed-in user's id, fetched in `load()` via `UserRepository.getProfile()`. Before the load resolves `isAdmin` is false, so admin affordances *appear* rather than disappear — the safe direction for a wrong guess, and there is exactly one source of truth for role rather than a summary and a member list that can disagree.
+
+**The leave decision is a `LeaveOutcome` enum computed as derived state.** `.promoteFirst` (sole admin, other members exist), `.deletesGroup` (sole admin, only member), `.simple` (everyone else) — a pure function of `members` + `currentUserId`, re-derived on every fetch. `leave()` **guards on it**: `.promoteFirst` returns early with a message and never calls the repository. So the rule lives in the model, not in the view's choice of prompt, and the view's job reduces to picking an alert vs. a confirmation dialog and swapping one line of copy. This is the same relationship `MyPintsViewModel.canDelete(_:)` has with the 24h window (ADR-0095): the API remains the authority, the client mirrors the rule to choose the right affordance. A useful consequence: promoting a member re-fetches, which turns `.promoteFirst` into `.simple` with no extra bookkeeping — requirements §5.18's "promote another member before leaving" flow works by re-derivation alone.
+
+**Group Detail is a value-based push on `GroupSummary` itself.** `GroupSummary` gains `Hashable` (every field already was) and `GroupListView` declares `.navigationDestination(for: GroupSummary.self)`, retiring its last inert closure (`onSelect`) — the same value-based pattern as `MemberRoute` (ADR-0088) and `ProfileRoute` (ADR-0094). `userRepository` is threaded into `GroupListView` (from `ProfileView`, which already holds it) so the destination can resolve the current user's id.
+
+**The list refreshes from the parent's `.onDisappear` on the destination, not a callback from the child.** `GroupListView` attaches `.onDisappear { Task { await model.refresh() } }` to the `GroupDetailView` it builds. Rename, remove, and leave all change the list's rows (name, member count, existence), so one modifier in the parent covers every mutation, and `GroupDetailView` needs no knowledge that a list exists.
+
+### Alternatives Considered
+- **Trust `GroupSummary.role` for `isAdmin` (no profile fetch):** rejected — it is stale by construction on the screen that mutates roles, and the current user's id is needed anyway to tell "my" row from everyone else's (a user can neither remove nor promote themselves). One fetch answers both.
+- **Let the API decide the leave outcome (call `leaveGroup`, branch on the error):** rejected — the user would tap a destructive confirmation, wait, and *then* be told to promote someone. The prompt itself is the decision point, so the client must know the outcome before showing it.
+- **Model the outcome as two booleans (`isSoleAdmin`, `hasOtherMembers`) on the view model:** rejected — the view would recombine them into three cases at every call site (button action, dialog copy, `leave()` guard). One enum names the three states once.
+- **A callback (`onLeave` / `onChanged`) from Group Detail to the list, mirroring `EditProfileView.onSaved` (ADR-0094):** rejected — `onSaved` fires at a single point of success, whereas Group Detail has four mutations that each change the list, which would mean four call sites (or one vague "something changed" closure). `.onDisappear` in the parent is one line and cannot be forgotten at a new mutation site.
+- **A rename sheet with its own view model, mirroring `CreateGroupView`:** rejected as over-engineering — the state is one string plus a validity flag, so it lives on `GroupDetailViewModel` and renders as a native rename alert with a `TextField`. Validation reuses `CreateGroupViewModel`'s shape verbatim (trim, then check against `1...50`).
+- **Per-row swipe actions for remove/promote:** rejected — swipe hides both actions behind a gesture with no affordance, and promote is not destructive. A trailing `ellipsis.circle` menu, shown only on rows the admin may manage, makes the availability of admin powers visible.
+
+### Consequences
+- 13 new `GroupDetailViewModelTests` (load, admin gating for admin vs. plain member, already-admin cannot be re-promoted, remove/promote reach the repository, rename validation at 0/50/51 chars, all three leave outcomes, and promote-then-leave). Full suite **260 pass**.
+- All three leave outcomes are reachable from the existing fixtures with no new knobs: Friday Club (Dave is its sole admin, 4 members) → `.promoteFirst`; Sunday League (Dave is a plain member) → `.simple`; a group created through the mock (creator is admin *and* only member) → `.deletesGroup`.
+- `GroupListView` is now closure-free; its rows are `NavigationLink`s, so the hand-rolled chevron in `groupRow` was removed (the link supplies one).
+- `GroupSummary` is now `Hashable`, joining `User` (ADR-0094) as a domain model that doubles as a navigation value.
+- The Invite screen (Task 23) is the screen's one remaining inert closure (`onInvite`).
+- **Revisit when:** Task 26 wires the real API — `removeMember`/`promoteMember`/`updateGroupName` will return 403 for a non-admin, which the current generic error copy would render as "Couldn't remove that member"; that is the point to decide whether a stale-role 403 deserves its own message and a forced reload. Task 23 replaces `onInvite` with a push destination.
