@@ -137,6 +137,7 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0101 | The invite code is the Invite screen's only state — link and QR are derived from it; the link format lives in one `InviteLink` namespace shared with the deep-link parser; the screen takes code + `isAdmin` as inputs from Group Detail rather than re-fetching | Accepted (revisit) |
 | 0102 | The map endpoint gets its own `MapPin` model (author joined in, location non-optional) rather than reusing `PintLog`; the viewport lives in the view model as a `MapBoundingBox`, converted from the settled map camera region; the first load asks for the whole world so the camera has pins to frame | Accepted (revisit) |
 | 0103 | The map's selected pin is view-model state, not view `@State`, because it must be reconciled against every re-fetch — a pin the latest query no longer returns takes its callout with it; the callout itself is a popover anchored to the annotation, so the system supplies the anchoring and the tap-outside dismissal | Accepted (revisit) |
+| 0104 | NetworkClient is an `actor` that reads tokens through a `TokenStoring` seam (not AuthRepository, which would be a cycle), coalesces concurrent refreshes onto one in-flight task because refresh tokens are single-use, and reports an unrecoverable session by callback so RootView's declarative gate does the navigating | Accepted (revisit) |
 
 ---
 
@@ -2656,3 +2657,45 @@ Task 25 (tasks-ios.md, requirements §6.7, l3-ios-app.md §Screens) adds the cal
 - `load()`'s no-active-group branch now also reconciles, so switching to a group with no pints closes an open callout rather than leaving one over a cleared map.
 - The popover renders inside a MapKit annotation, so a pin near the screen edge relies on the system to flip the arrow edge; that behaviour is only verifiable on device/simulator, not in the unit tests.
 - **Revisit when:** (a) Task 26 wires real photos — the thumbnail becomes an async image load, and a callout opened before it resolves needs a loading state; (b) clustering, if it lands, changes what a tap means (a cluster has no single pint to show); (c) the callout ever grows an action, at which point "read-only browsing surface" stops being true and it likely wants to become a navigation destination instead.
+
+---
+
+## ADR-0104: NetworkClient is an actor that owns tokens through a storage seam, not through AuthRepository — and reports a dead session by callback, never by navigation
+
+Status: Accepted (revisit)
+Date: 2026-08-01
+
+### Context
+Task 26 (tasks-ios.md, l3-ios-app.md §6) builds the real networking layer: a URLSession wrapper that injects the JWT, refreshes proactively inside a 5-minute window, refreshes reactively on a 401 and retries once, and maps HTTP statuses onto `APIError`. Three things had to be decided before any of that could be written.
+
+1. **Where does the client read the JWT from?** The design says "the AuthRepository monitors JWT expiry" — but AuthRepository will be built *on top of* NetworkClient (it calls `POST /auth/apple`), so a client that depends on the repository is a cycle.
+2. **What kind of object is the client?** Repositories are `@MainActor @Observable` classes. The client is not UI state, and it has one piece of genuinely shared mutable state: the refresh in flight.
+3. **What happens when refresh fails?** The design says "clear Keychain → trigger logout → show login screen", and the client has no business navigating.
+
+### Decision
+**Tokens reach the client through a `TokenStoring` seam, not through AuthRepository.** A three-method protocol (`load`/`save`/`clear`) over a `Tokens` pair, with `InMemoryTokenStore` today and a Keychain-backed implementation in Task 27 — a one-line substitution at the app edge. The dependency now points one way: repositories → client → store. Reads and writes are deliberately non-throwing, because a storage failure is indistinguishable *to the client* from "not signed in", and that case already has a defined path (401 → refresh → logout); adding a throwing variant would create a second way to express the same outcome.
+
+**The client is an `actor`, for one specific reason: refresh tokens are single-use and rotate, and the API invalidates the entire token family if an old one is replayed (l3-api.md Property 5).** Two concurrent 401s must not each spend the same refresh token. The actor holds `refreshTask: Task<Tokens, Error>?`, so the second caller awaits the first's in-flight refresh instead of starting its own — the one piece of state the client owns beyond its dependencies. Being an actor also keeps the whole class off the main actor, where none of this work belongs.
+
+**A dead session is reported by callback (`setAuthenticationLostHandler`), not by navigation.** On refresh failure the client clears the store, calls the handler, and throws `.unauthorized`. The real AuthRepository will hook that up to drop its session, and `RootView`'s `@Observable` gate (ADR-0083) swaps back to Login declaratively — the same shape as account deletion (ADR-0096) and the active-group side effect (ADR-0098): shared state changes, the UI follows. The handler is set *after* construction, which is what lets the repository depend on the client while the client signals back to it.
+
+**`Endpoint` is a value type that knows the catalogue and nothing else.** It owns path, method, query items, JSON body, `requiresAuthentication`, and `makeRequest(baseURL:)` — but never the Authorization header, because the client may re-stamp that on a retry with a newly refreshed token. `requiresAuthentication` is false only for `/auth/apple` and `/auth/refresh`, which is also the mechanism that stops the 401 handler recursing into itself. Optional PATCH fields are omitted rather than sent as null (Swift synthesises `encodeIfPresent`), matching the API's `request.field?.let { ... }` "absent means unchanged" semantics.
+
+**Two error mappings are judgement calls, both collapsing into existing cases rather than growing `APIError`:** a transport failure with no HTTP response is `.networkUnavailable`, and a 2xx whose body will not decode is `.serverError` — a server breaking its own contract, which is what that case already means. No new error cases, so no screen has to learn a new failure mode.
+
+### Alternatives Considered
+- **Client asks AuthRepository for the token (as the design text implies):** rejected — a dependency cycle. Inverting it via a protocol the repository conforms to would work, but the repository would then be answering "what is the JWT" on the main actor from inside a background request path, for no gain over a plain store.
+- **`final class NetworkClient` with a lock, or `@MainActor`:** rejected — the lock is the actor written by hand, and `@MainActor` would put request bookkeeping on the UI actor while adding nothing.
+- **No refresh coalescing (each 401 refreshes independently):** rejected — that is precisely the token-replay the API punishes by invalidating the family, and the cost of avoiding it is one stored `Task`.
+- **`NotificationCenter` for session loss:** rejected — an untyped global broadcast for something with exactly one listener.
+- **Adding `APIError.decodingFailed` / `.transportFailed`:** rejected — every screen would have to map two more cases to the same copy it already shows for `.serverError` and `.networkUnavailable`.
+- **A generic `Request` struct built by each repository instead of one `Endpoint` enum:** rejected — the enum keeps the API catalogue in one readable file that can be diffed against l3-api.md §1, and makes "which endpoints skip auth" a single exhaustive switch.
+- **A third-party HTTP library:** out of scope by design (l3-ios-app.md §6).
+
+### Consequences
+- 51 new tests (11 `EndpointTests`, 8 `MultipartFormDataTests`, 8 `TokenStoreTests`, 24 `NetworkClientTests` counting the parameterised status-mapping cases). Full suite **345 pass**.
+- Tests run through a real `URLSession` wired to a `StubURLProtocol`, so header injection, URL construction, and decoding are genuinely exercised. Two consequences of that choice: the stub's handler and recording are process-global (URLSession instantiates the protocol itself), so `NetworkClientTests` is `@Suite(.serialized)`; and URLSession moves `httpBody` into `httpBodyStream` before the protocol sees it, so bodies are read off the stream at intercept time.
+- The coalescing test holds the refresh response open for 300 ms to guarantee overlap. It is the one time-dependent test in the suite; the property it protects is worth it.
+- Nothing is wired up yet — no repository uses the client, and no base URL is configured. The mocks still back every screen. That swap is a later task, and it is where two **wire mismatches found while writing this** will have to be resolved: `User` carries `appleId`, which `GET /users/me` does not return, and `PintLog` nests `location`, which the API sends flat as `latitude`/`longitude`. Both decode fine against the mocks and would fail against the real server.
+- `MultipartFormData` is framed by hand (URLSession has no builder). Its exact bytes are unit-tested because one missing CRLF fails the whole upload with a message that will not name the cause.
+- **Revisit when:** (a) Task 27 lands the Keychain store — `InMemoryTokenStore` should survive only as a test double; (b) the real repositories arrive and the two model/wire mismatches above come due; (c) 400/422 responses need their field-level error bodies surfaced (the API sends a `FieldError` list that `.validationFailed` currently discards); (d) uploads need progress reporting or background sessions, which `session.data(for:)` cannot provide.
