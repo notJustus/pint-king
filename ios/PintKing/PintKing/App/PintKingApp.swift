@@ -20,6 +20,7 @@ struct PintKingApp: App {
     @State private var userRepository = MockUserRepository()
     @State private var leaderboardRepository = MockLeaderboardRepository()
     @State private var pintRepository = MockPintRepository()
+    @State private var mapRepository = MockMapRepository()
     @State private var locationPermission = CLLocationPermission()
 
     var body: some Scene {
@@ -30,6 +31,7 @@ struct PintKingApp: App {
                 userRepository: userRepository,
                 leaderboardRepository: leaderboardRepository,
                 pintRepository: pintRepository,
+                mapRepository: mapRepository,
                 locationPermission: locationPermission
             )
         }

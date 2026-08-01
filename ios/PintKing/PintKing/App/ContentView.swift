@@ -18,6 +18,7 @@ struct ContentView: View {
     private let userRepository: any UserRepositoryProtocol
     private let leaderboardRepository: any LeaderboardRepositoryProtocol
     private let pintRepository: any PintRepositoryProtocol
+    private let mapRepository: any MapRepositoryProtocol
     private let authRepository: any AuthRepositoryProtocol
     private let locationPermission: any LocationPermissionRequesting
 
@@ -26,6 +27,7 @@ struct ContentView: View {
         userRepository: any UserRepositoryProtocol,
         leaderboardRepository: any LeaderboardRepositoryProtocol,
         pintRepository: any PintRepositoryProtocol,
+        mapRepository: any MapRepositoryProtocol,
         authRepository: any AuthRepositoryProtocol,
         locationPermission: any LocationPermissionRequesting
     ) {
@@ -33,6 +35,7 @@ struct ContentView: View {
         self.userRepository = userRepository
         self.leaderboardRepository = leaderboardRepository
         self.pintRepository = pintRepository
+        self.mapRepository = mapRepository
         self.authRepository = authRepository
         self.locationPermission = locationPermission
         _model = State(initialValue: RootTabViewModel(groupRepository: groupRepository))
@@ -43,7 +46,8 @@ struct ContentView: View {
             HomeView(
                 groupRepository: groupRepository,
                 leaderboardRepository: leaderboardRepository,
-                pintRepository: pintRepository
+                pintRepository: pintRepository,
+                mapRepository: mapRepository
             )
             .tabItem { Label("Home", systemImage: "trophy") }
             .tag(RootTab.home)
@@ -103,6 +107,7 @@ struct ContentView: View {
         userRepository: MockUserRepository(),
         leaderboardRepository: MockLeaderboardRepository(),
         pintRepository: MockPintRepository(),
+        mapRepository: MockMapRepository(),
         authRepository: MockAuthRepository(authenticated: true),
         locationPermission: MockLocationPermission()
     )

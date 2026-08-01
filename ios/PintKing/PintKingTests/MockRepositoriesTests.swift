@@ -339,6 +339,12 @@ struct MockRepositoriesTests {
     private let londonSW = Coordinate(latitude: 51.40, longitude: -0.30)
     private let londonNE = Coordinate(latitude: 51.60, longitude: 0.05)
 
+    /// The Friday Club pints that a box over London should produce a pin for:
+    /// located ones only (Property 24c).
+    private var locatedFridayPints: [PintLog] {
+        MockData.pints.filter { $0.groupId == MockData.fridayId && $0.location != nil }
+    }
+
     @Test func mapReturnsGroupPintsInsideBox() async throws {
         let map: MapRepositoryProtocol = MockMapRepository()
         let pins = try await map.getPintsInBoundingBox(
@@ -346,16 +352,36 @@ struct MockRepositoriesTests {
             southWest: londonSW, northEast: londonNE
         )
         #expect(pins.isEmpty == false)
-        #expect(pins.allSatisfy { $0.groupId == MockData.fridayId })
+        #expect(Set(pins.map(\.id)) == Set(locatedFridayPints.map(\.id)))
     }
 
+    /// A pin can't *carry* a missing location — the type says so — so the property
+    /// under test is that the unlocated pints are dropped rather than defaulted:
+    /// the pin count matches the located pints exactly.
     @Test func mapNeverReturnsUnlocatedPints() async throws {
         let map: MapRepositoryProtocol = MockMapRepository()
         let pins = try await map.getPintsInBoundingBox(
             groupId: MockData.fridayId, scope: .group,
             southWest: londonSW, northEast: londonNE
         )
-        #expect(pins.allSatisfy { $0.location != nil })
+        #expect(pins.count == locatedFridayPints.count)
+        #expect(pins.count < MockData.pints.filter { $0.groupId == MockData.fridayId }.count)
+    }
+
+    @Test func mapPinsCarryTheAuthorAndFormerMemberFlag() async throws {
+        let map: MapRepositoryProtocol = MockMapRepository()
+        let pins = try await map.getPintsInBoundingBox(
+            groupId: MockData.fridayId, scope: .group,
+            southWest: londonSW, northEast: londonNE
+        )
+        // Fred left Friday Club; his pints remain and are flagged (Property 23).
+        let fred = try #require(pins.first { $0.userId == MockData.fredId })
+        #expect(fred.displayName == "Fred Ashby")
+        #expect(fred.isFormerMember)
+        // A current member's pin carries their name and is not flagged.
+        let dave = try #require(pins.first { $0.userId == MockData.daveId })
+        #expect(dave.displayName == "Dave Smith")
+        #expect(dave.isFormerMember == false)
     }
 
     @Test func mapPersonalScopeFiltersToCurrentUser() async throws {

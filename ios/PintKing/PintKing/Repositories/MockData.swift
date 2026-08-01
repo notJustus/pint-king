@@ -38,13 +38,33 @@ enum MockData {
     static let sundayId = UUID()
     static let officeId = UUID()
 
+    /// One table of display names, keyed by user id. Every fixture that carries a
+    /// name (members, leaderboard entries, map pins) reads it from here, so a
+    /// user is spelled the same way in every domain — the same reason the ids are
+    /// shared constants. The map mock especially needs it: a pin's author may be
+    /// a *former* member, so their name can't be looked up in the member list.
+    static let displayNames: [UUID: String] = [
+        daveId: "Dave Smith",
+        emmaId: "Emma Byrne",
+        liamId: "Liam O'Neill",
+        oliviaId: "Olivia Reed",
+        noahId: "Noah Patel",
+        avaId: "Ava Lindqvist",
+        sophiaId: "Sophia Marchetti",
+        fredId: "Fred Ashby",
+    ]
+
+    static func displayName(_ userId: UUID) -> String {
+        displayNames[userId] ?? "Unknown"
+    }
+
     // MARK: - Current user
 
     /// The authenticated user. `activeGroupId` starts on Friday Club.
     static let currentUser = User(
         id: daveId,
         appleId: "000123.dave.0001",
-        displayName: "Dave Smith",
+        displayName: displayName(daveId),
         avatarUrl: "avatars/\(daveId)/1.jpg",
         activeGroupId: fridayId
     )
@@ -100,23 +120,23 @@ enum MockData {
         switch groupId {
         case fridayId:
             return [
-                member(daveId, fridayId, .admin, "Dave Smith", joinedDaysAgo: 120),
-                member(emmaId, fridayId, .member, "Emma Byrne", joinedDaysAgo: 118),
-                member(liamId, fridayId, .member, "Liam O'Neill", joinedDaysAgo: 100),
-                member(oliviaId, fridayId, .member, "Olivia Reed", joinedDaysAgo: 60),
+                member(daveId, fridayId, .admin, joinedDaysAgo: 120),
+                member(emmaId, fridayId, .member, joinedDaysAgo: 118),
+                member(liamId, fridayId, .member, joinedDaysAgo: 100),
+                member(oliviaId, fridayId, .member, joinedDaysAgo: 60),
             ]
         case sundayId:
             return [
-                member(emmaId, sundayId, .admin, "Emma Byrne", joinedDaysAgo: 80),
-                member(daveId, sundayId, .member, "Dave Smith", joinedDaysAgo: 75),
-                member(noahId, sundayId, .member, "Noah Patel", joinedDaysAgo: 70),
-                member(avaId, sundayId, .member, "Ava Lindqvist", joinedDaysAgo: 30),
+                member(emmaId, sundayId, .admin, joinedDaysAgo: 80),
+                member(daveId, sundayId, .member, joinedDaysAgo: 75),
+                member(noahId, sundayId, .member, joinedDaysAgo: 70),
+                member(avaId, sundayId, .member, joinedDaysAgo: 30),
             ]
         case officeId:
             return [
-                member(liamId, officeId, .admin, "Liam O'Neill", joinedDaysAgo: 40),
-                member(daveId, officeId, .member, "Dave Smith", joinedDaysAgo: 38),
-                member(sophiaId, officeId, .member, "Sophia Marchetti", joinedDaysAgo: 20),
+                member(liamId, officeId, .admin, joinedDaysAgo: 40),
+                member(daveId, officeId, .member, joinedDaysAgo: 38),
+                member(sophiaId, officeId, .member, joinedDaysAgo: 20),
             ]
         default:
             return []
@@ -153,28 +173,28 @@ enum MockData {
         case fridayId:
             return [
                 // Dense-ranked tie at the top: both are rank 1 (both get the crown).
-                entry(daveId, "Dave Smith", count: 12, rank: 1),
-                entry(emmaId, "Emma Byrne", count: 12, rank: 1),
-                entry(liamId, "Liam O'Neill", count: 8, rank: 2),   // dense: 2, not 3
-                entry(oliviaId, "Olivia Reed", count: 3, rank: 3),
+                entry(daveId, count: 12, rank: 1),
+                entry(emmaId, count: 12, rank: 1),
+                entry(liamId, count: 8, rank: 2),   // dense: 2, not 3
+                entry(oliviaId, count: 3, rank: 3),
                 // Former member: unranked, own section.
                 LeaderboardEntry(
-                    userId: fredId, displayName: "Fred Ashby", avatarUrl: nil,
+                    userId: fredId, displayName: displayName(fredId), avatarUrl: nil,
                     pintCount: 5, rank: 0, rankDelta: nil, isFormerMember: true
                 ),
             ]
         case sundayId:
             return [
-                entry(emmaId, "Emma Byrne", count: 20, rank: 1),
-                entry(daveId, "Dave Smith", count: 15, rank: 2),
-                entry(noahId, "Noah Patel", count: 15, rank: 2),    // tie at rank 2
-                entry(avaId, "Ava Lindqvist", count: 6, rank: 3),
+                entry(emmaId, count: 20, rank: 1),
+                entry(daveId, count: 15, rank: 2),
+                entry(noahId, count: 15, rank: 2),    // tie at rank 2
+                entry(avaId, count: 6, rank: 3),
             ]
         case officeId:
             return [
-                entry(liamId, "Liam O'Neill", count: 9, rank: 1),
-                entry(daveId, "Dave Smith", count: 4, rank: 2),
-                entry(sophiaId, "Sophia Marchetti", count: 4, rank: 2),
+                entry(liamId, count: 9, rank: 1),
+                entry(daveId, count: 4, rank: 2),
+                entry(sophiaId, count: 4, rank: 2),
             ]
         default:
             return []
@@ -260,19 +280,19 @@ enum MockData {
 
     private static func member(
         _ userId: UUID, _ groupId: UUID, _ role: GroupMemberRole,
-        _ name: String, joinedDaysAgo days: Int
+        joinedDaysAgo days: Int
     ) -> GroupMember {
         GroupMember(
             id: UUID(), userId: userId, groupId: groupId, role: role,
-            joinedAt: date(daysAgo: days), displayName: name, avatarUrl: nil
+            joinedAt: date(daysAgo: days), displayName: displayName(userId), avatarUrl: nil
         )
     }
 
     private static func entry(
-        _ userId: UUID, _ name: String, count: Int, rank: Int
+        _ userId: UUID, count: Int, rank: Int
     ) -> LeaderboardEntry {
         LeaderboardEntry(
-            userId: userId, displayName: name, avatarUrl: nil,
+            userId: userId, displayName: displayName(userId), avatarUrl: nil,
             pintCount: count, rank: rank, rankDelta: nil, isFormerMember: false
         )
     }

@@ -22,6 +22,7 @@ struct RootView: View {
     private let userRepository: any UserRepositoryProtocol
     private let leaderboardRepository: any LeaderboardRepositoryProtocol
     private let pintRepository: any PintRepositoryProtocol
+    private let mapRepository: any MapRepositoryProtocol
     private let locationPermission: any LocationPermissionRequesting
 
     /// Whether the first-login Profile Setup step is done for this session. The
@@ -34,6 +35,7 @@ struct RootView: View {
         userRepository: any UserRepositoryProtocol,
         leaderboardRepository: any LeaderboardRepositoryProtocol,
         pintRepository: any PintRepositoryProtocol,
+        mapRepository: any MapRepositoryProtocol,
         locationPermission: any LocationPermissionRequesting
     ) {
         self.authRepository = authRepository
@@ -41,6 +43,7 @@ struct RootView: View {
         self.userRepository = userRepository
         self.leaderboardRepository = leaderboardRepository
         self.pintRepository = pintRepository
+        self.mapRepository = mapRepository
         self.locationPermission = locationPermission
     }
 
@@ -60,6 +63,7 @@ struct RootView: View {
                 userRepository: userRepository,
                 leaderboardRepository: leaderboardRepository,
                 pintRepository: pintRepository,
+                mapRepository: mapRepository,
                 authRepository: authRepository,
                 locationPermission: locationPermission
             )
@@ -74,6 +78,7 @@ struct RootView: View {
         userRepository: MockUserRepository(),
         leaderboardRepository: MockLeaderboardRepository(),
         pintRepository: MockPintRepository(),
+        mapRepository: MockMapRepository(),
         locationPermission: MockLocationPermission()
     )
 }
@@ -85,6 +90,7 @@ struct RootView: View {
         userRepository: MockUserRepository(),
         leaderboardRepository: MockLeaderboardRepository(),
         pintRepository: MockPintRepository(),
+        mapRepository: MockMapRepository(),
         locationPermission: MockLocationPermission()
     )
 }
