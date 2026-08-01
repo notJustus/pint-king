@@ -139,6 +139,7 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0103 | The map's selected pin is view-model state, not view `@State`, because it must be reconciled against every re-fetch — a pin the latest query no longer returns takes its callout with it; the callout itself is a popover anchored to the annotation, so the system supplies the anchoring and the tap-outside dismissal | Accepted (revisit) |
 | 0104 | NetworkClient is an `actor` that reads tokens through a `TokenStoring` seam (not AuthRepository, which would be a cycle), coalesces concurrent refreshes onto one in-flight task because refresh tokens are single-use, and reports an unrecoverable session by callback so RootView's declarative gate does the navigating | Accepted (revisit) |
 | 0105 | `KeychainService` files every item under one `kSecAttrService`, making it the app's partition of the keychain — so `deleteAll()` is a single query that also catches keys retired by an older build; the wrapper throws `OSStatus` while `KeychainTokenStore` swallows into nil, because "signed out" is a decision about tokens, not about storage; the pair is `AfterFirstUnlockThisDeviceOnly` so background uploads can read it but a restored backup cannot | Accepted (revisit) |
+| 0106 | The deep-link router holds a pending invite code and has no auth dependency — RootView's existing three-way gate is what defers an invite until after login, so the design's `if authenticated` branch disappears; `InviteLink` owns both directions of the URL format; invite codes are case-sensitive everywhere, which made Task 21's upper-casing a bug | Accepted (revisit) |
 
 ---
 
@@ -2744,3 +2745,49 @@ Task 26 left `TokenStoring` backed by `InMemoryTokenStore`, with the note that T
 - `InMemoryTokenStore` is now a test double only; its doc comment says so.
 - Nothing is wired up yet — `PintKingApp` still constructs only mock repositories, and no `NetworkClient` exists at runtime. The line `KeychainTokenStore()` is the whole integration, and it lands with the real repositories.
 - **Revisit when:** (a) the real repositories arrive and the app edge constructs the store — that is also when "signed in on launch" becomes a keychain read, and the app has to decide what to show while it happens; (b) anything other than tokens needs storing (an Apple user identifier for `getCredentialState`, say) — `KeychainKey` grows a case and `deleteAll()` keeps working unchanged; (c) a repeated `errSecMissingEntitlement` on a real device forces a keychain-sharing entitlement, which the simulator will not reveal (Task 30's on-device pass is the check).
+
+---
+
+## ADR-0106: The deep-link router holds a pending invite code and knows nothing about auth — RootView's existing gate is what defers it until after login; `InviteLink` owns both directions of the format, and invite codes are case-sensitive everywhere
+
+Status: Accepted (revisit)
+Date: 2026-08-01
+
+### Context
+
+Task 28 adds the `.onOpenURL` handler for invite links. The design (l3-ios-app.md §"Deep-Linking") states the requirement in two branches: if authenticated, show the Join Confirmation; if not, persist the code locally, complete auth, then show it. Written literally, that is an `if isAuthenticated` inside the handler.
+
+1. **Should the router branch on authentication?** The app already has exactly one place that decides what a signed-out user may see: RootView's three-way gate (ADR-0083). A second copy of that decision in the router would also be a *partial* copy — the gate's third state, "signed in but Profile Setup not yet done", is view-local `@State` the router cannot observe.
+2. **Where does URL parsing live?** ADR-0101 built `InviteLink` for the outbound direction and explicitly left this open: "Task 28 also decides whether `InviteLink` grows a `code(from:)` inverse here or a fuller route parser."
+3. **What presents the confirmation, and what clears the code afterwards?** A code that is not released re-presents its own sheet.
+4. **Found while writing the parser:** the API generates invite codes from `a-zA-Z0-9` (`GroupService.INVITE_CODE_ALPHABET`) and resolves them with an exact `findByInviteCode`. Task 21's manual entry screen upper-cases every keystroke.
+
+### Decision
+
+**`DeepLinkRouter` is an app-lifetime `@Observable` holding one `pendingInviteCode`, and it has no dependencies at all.** `handle(_:)` stores a code or ignores the URL; `consume()` clears it. The auth deferral is implemented by *where the object is threaded*, not by a branch inside it: `RootView` passes the router into the signed-in-and-set-up branch only. While Login or Profile Setup is on screen there is no sheet modifier subscribed to `pendingInviteCode`, so a code parsed mid-sign-in simply waits; the moment `isAuthenticated` flips, the branch that presents it renders with the code still pending. This is the fourth use of "shared state drives the UI, the gate does the navigating" (ADR-0096 account deletion, ADR-0098 create, ADR-0099 join) and the reason it is worth stating again is that here it replaces an `if` the design text asked for by name.
+
+**A URL that is not an invite link is inert, not destructive.** `.onOpenURL` is a firehose, so "not mine" must never clear a code that is already pending.
+
+**`InviteLink` grows `code(from:)`, the exact inverse of `url(for:)`, and every rule about the URL lives there** — scheme, host, path shape, and the code's own alphabet. The router therefore has no shape rules of its own to get wrong, and the round-trip is a property of one type, which is what ADR-0101 built the namespace for. Scheme and host are matched case-insensitively (RFC 3986 says they are); a trailing slash is accepted; query items are ignored for free because the check is path-based. The code itself is validated by `isValidCode`, whose ASCII check matters — Swift's `isLetter` is true for "é", which the server's alphabet has no room for.
+
+**Invite codes are case-sensitive on every path, and Task 21's upper-casing was a bug.** The API's alphabet is mixed-case and its lookup is exact, so upper-casing a typed code turns it into a 404 unless the code happens to contain no lowercase letter — about 1 code in 400. `JoinGroupViewModel.normalize` now preserves case and filters against `InviteLink.isCodeCharacter`, its `isCodeValid` delegates to `InviteLink.isValidCode`, and the field's keyboard no longer auto-capitalises. A typed code and a tapped one are now held to one standard.
+
+**The confirmation is presented as a sheet over the tab bar via `.sheet(item:)`, keyed on the code as its own identity.** A repeat link for the same code while the sheet is open changes nothing; a different code swaps its contents. The binding reads through to the router and its setter only ever receives `nil` — SwiftUI reporting a dismissal — which routes to `consume()`, so Join, Cancel and swipe-to-dismiss all release the code through one path. The manual-entry screen (`JoinGroupView`) is skipped entirely: the link already carries the code, so there is nothing to ask.
+
+### Alternatives Considered
+
+- **`if authRepository.isAuthenticated` inside `handle(_:)` (the design text as written):** rejected — it duplicates RootView's gate, and only partially, since the router cannot see `didCompleteSetup`. Passing the auth repository in would also give a URL parser a session dependency.
+- **A `shouldPresentConfirmation` computed on the router:** rejected for the same reason — it reads like the decision lives there while the real gate is still upstream, which is worse than not having it.
+- **Persisting the pending code in UserDefaults or the Keychain:** rejected — the design says "locally", and an invite the user ignored should not resurface after a cold launch days later. In-memory matches the intent and needs no invalidation rule.
+- **A general `DeepLinkRoute` enum parsed from any URL:** rejected — there is exactly one link type. A parser for routes that do not exist is a guess about a future URL scheme.
+- **Routing to `JoinGroupView` with the code pre-filled:** rejected — it asks the user to confirm a code they never typed, on a screen whose whole purpose is entering one.
+- **Clearing `pendingInviteCode` inside `JoinConfirmationViewModel` on success:** rejected — dismissal has three causes and only one of them is a success; the binding's setter already sees all three.
+- **Leaving Task 21's upper-casing alone as out of scope:** rejected — the deep-link parser forced the case question, and the answer makes ~99.8% of real codes untypeable today. It is a one-line fix in the file that raised it.
+
+### Consequences
+
+- 25 new tests (6 `DeepLinkRouterTests`, 18 `InviteLinkTests` parsing cases counting the two parameterised sets, 1 `JoinGroupViewModelTests`). Full suite **385 pass**.
+- The auth-state half of the requirement is unit-tested as `pendingCodeSurvivesSigningIn` — the router holds the code across a `MockAuthRepository.login()`. That the signed-in branch is the *only* one subscribed is structural rather than asserted, and is exercised in the Task 30 UI pass.
+- `InviteLink.codeLength` is now the single definition of "8"; `JoinGroupViewModel.codeLength` is gone and the view reads `InviteLink.codeLength`.
+- **Universal Links are not yet functional on a device.** `.onOpenURL` is wired, but a Universal Link needs the `com.apple.developer.associated-domains` entitlement and an `apple-app-site-association` file served from `pintking.app` — both deployment concerns requiring a paid team and a live domain. Until then the handler is reachable only from tests and from `xcrun simctl openurl`.
+- **Revisit when:** (a) the associated-domains entitlement lands and the link can be tapped for real (Task 30) — that is also when a link arriving while the camera's `fullScreenCover` is up needs checking, since two presentations would compete; (b) a code for a group the user is already in should arguably show something friendlier than the confirmation screen's 409 copy, which needs an endpoint that resolves a code without joining — the enumeration-oracle problem ADR-0099 declined to open; (c) a second link type appears (a pint permalink, say) and `DeepLinkRoute` stops being a guess.
