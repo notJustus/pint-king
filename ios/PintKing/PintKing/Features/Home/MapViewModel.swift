@@ -41,6 +41,13 @@ final class MapViewModel {
     /// shows a progress indicator, so panning doesn't flash it over the map.
     private(set) var isLoading = false
 
+    /// The pin whose callout is open, or nil when none is (requirements §6.7).
+    /// This is view-model state rather than view `@State` — unlike the history
+    /// screen's photo viewer, the selection has to stay consistent with `pins`:
+    /// a pin that leaves the results takes its callout with it (see
+    /// `reconcileSelection`), which is a rule worth testing.
+    private(set) var selectedPin: MapPin?
+
     private let groupRepository: any GroupRepositoryProtocol
     private let mapRepository: any MapRepositoryProtocol
 
@@ -60,6 +67,8 @@ final class MapViewModel {
     /// existing pins on screen rather than blanking the map.
     var showsInitialLoading: Bool { isLoading && !hasPins }
 
+    var hasCallout: Bool { selectedPin != nil }
+
     // MARK: - Actions
 
     /// Fetch pins for the Active_Group, current scope, and current viewport. With
@@ -69,6 +78,7 @@ final class MapViewModel {
     func load() async {
         guard let groupId = groupRepository.activeGroup?.id else {
             pins = []
+            reconcileSelection()
             return
         }
         isLoading = true
@@ -79,6 +89,28 @@ final class MapViewModel {
             southWest: boundingBox.southWest,
             northEast: boundingBox.northEast
         )) ?? []
+        reconcileSelection()
+    }
+
+    /// Open the callout for a tapped pin, replacing any other that was open.
+    func selectPin(_ pin: MapPin) {
+        selectedPin = pin
+    }
+
+    /// Close the callout — what a tap outside it means.
+    func dismissCallout() {
+        selectedPin = nil
+    }
+
+    /// Keep an open callout consistent with what's actually on the map. A pin
+    /// the latest fetch no longer returns (panned out of the viewport, filtered
+    /// out by the scope toggle, or in a group that's no longer active) takes its
+    /// callout with it; one that's still there is swapped for the freshly
+    /// fetched copy, so the callout can never show details the map has since
+    /// re-read differently.
+    private func reconcileSelection() {
+        guard let selected = selectedPin else { return }
+        selectedPin = pins.first { $0.id == selected.id }
     }
 
     /// Switch the Personal/Group toggle and re-fetch the same viewport. A no-op

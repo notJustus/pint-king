@@ -153,6 +153,74 @@ struct MapViewModelTests {
         #expect(vm.pins.isEmpty)
     }
 
+    // MARK: - Callout (Task 25)
+
+    @Test func tappingAPinOpensACalloutForThatPint() async throws {
+        let vm = makeViewModel()
+        await vm.load()
+        let pin = try #require(vm.pins.first)
+
+        vm.selectPin(pin)
+
+        #expect(vm.hasCallout)
+        // The callout renders straight off the selected pin, so "correct data"
+        // is the whole pin coming back unchanged.
+        #expect(vm.selectedPin == pin)
+    }
+
+    @Test func tappingOutsideDismissesTheCallout() async {
+        let vm = makeViewModel()
+        await vm.load()
+        vm.selectPin(vm.pins[0])
+
+        vm.dismissCallout()
+
+        #expect(vm.selectedPin == nil)
+        #expect(vm.hasCallout == false)
+    }
+
+    @Test func tappingAnotherPinReplacesTheOpenCallout() async {
+        let vm = makeViewModel()
+        await vm.load()
+        vm.selectPin(vm.pins[0])
+
+        vm.selectPin(vm.pins[1])
+
+        #expect(vm.selectedPin == vm.pins[1])
+    }
+
+    @Test func panningAwayFromTheSelectedPinDismissesTheCallout() async {
+        let vm = makeViewModel()
+        await vm.load()
+        vm.selectPin(vm.pins[0])
+
+        await vm.regionChanged(to: emptyOceanRegion)
+
+        #expect(vm.selectedPin == nil)
+    }
+
+    @Test func aRefetchThatStillContainsTheSelectedPinKeepsTheCalloutOpen() async {
+        let vm = makeViewModel()
+        await vm.load()
+        let pin = vm.pins[0]
+        vm.selectPin(pin)
+
+        await vm.regionChanged(to: londonRegion)   // the fixtures are in London
+
+        #expect(vm.selectedPin == pin)
+    }
+
+    @Test func switchingToPersonalDismissesAnotherMembersCallout() async throws {
+        let vm = makeViewModel()
+        await vm.load()
+        let othersPin = try #require(vm.pins.first { $0.userId != MockData.currentUser.id })
+        vm.selectPin(othersPin)
+
+        await vm.select(.personal)
+
+        #expect(vm.selectedPin == nil)
+    }
+
     // MARK: - Bounding box geometry
 
     @Test func boundingBoxIsTheRegionsCentrePlusMinusHalfItsSpan() {

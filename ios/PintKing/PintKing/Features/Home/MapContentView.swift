@@ -12,9 +12,12 @@
 //  then on the user drives it, each settled gesture handing the new region down
 //  to be re-queried.
 //
-//  Avatars are initials placeholders for now: pins carry an `avatarUrl`, but
-//  loading remote images needs the networking layer (Task 26). Tapping a pin
-//  opens the callout in Task 25.
+//  Tapping a pin opens its callout (Task 25) as a popover anchored to that pin:
+//  the system gives the anchoring and the tap-outside-to-dismiss for free, and
+//  the binding routes both back through the view model, which owns the selection.
+//
+//  Avatars and photos are placeholders for now: pins carry an `avatarUrl` and a
+//  `photoUrl`, but loading remote images needs the networking layer (Task 26).
 //
 
 import SwiftUI
@@ -78,6 +81,13 @@ struct MapContentView: View {
             ForEach(model.pins) { pin in
                 Annotation(pin.displayName, coordinate: coordinate(of: pin)) {
                     MapAvatarPin(name: pin.displayName, isFormerMember: pin.isFormerMember)
+                        .onTapGesture { model.selectPin(pin) }
+                        .popover(isPresented: calloutBinding(for: pin)) {
+                            PintCalloutView(pin: pin)
+                                // Without this the popover would adapt into a
+                                // sheet on iPhone, losing the anchor to the pin.
+                                .presentationCompactAdaptation(.popover)
+                        }
                 }
             }
         }
@@ -90,6 +100,19 @@ struct MapContentView: View {
 
     private func coordinate(of pin: MapPin) -> CLLocationCoordinate2D {
         CLLocationCoordinate2D(latitude: pin.latitude, longitude: pin.longitude)
+    }
+
+    /// Whether *this* pin's callout is up. The getter reads the model's single
+    /// selection, so opening one callout closes any other; the setter only ever
+    /// fires with `false` — that's the system telling us the user tapped outside
+    /// — so dismissal has exactly one implementation, in the view model.
+    private func calloutBinding(for pin: MapPin) -> Binding<Bool> {
+        Binding(
+            get: { model.selectedPin?.id == pin.id },
+            set: { isPresented in
+                if !isPresented { model.dismissCallout() }
+            }
+        )
     }
 
     // MARK: - Empty state
@@ -132,6 +155,65 @@ private struct MapAvatarPin: View {
     }
 
     private var tint: Color { isFormerMember ? .secondary : .accentColor }
+}
+
+// MARK: - Callout
+
+/// The tapped pin's pint: photo thumbnail, who logged it, the drink type and
+/// note when they were set, and when (requirements §6.7). Read-only — the map is
+/// a browsing surface, so there's no action here even on your own pints.
+private struct PintCalloutView: View {
+    let pin: MapPin
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            CalloutThumbnail()
+                .frame(width: 72, height: 72)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(pin.displayName)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(pin.isFormerMember ? .secondary : .primary)
+
+                if let note = pin.note, !note.isEmpty {
+                    Text(note)
+                        .font(.footnote)
+                        .lineLimit(3)
+                }
+
+                HStack(spacing: 8) {
+                    if let drink = pin.drinkType {
+                        Text(drink.rawValue.capitalized)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.tint)
+                    }
+                    Text(pin.loggedAt, format: .relative(presentation: .named))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(16)
+        // A popover sizes itself to its content, and an unconstrained note would
+        // stretch it to the screen; this keeps the callout card-shaped.
+        .frame(width: 280)
+    }
+}
+
+/// Square photo placeholder for the callout (real photos arrive with the
+/// networking layer, Task 26) — the same stand-in the history rows use.
+private struct CalloutThumbnail: View {
+    var body: some View {
+        RoundedRectangle(cornerRadius: 8)
+            .fill(.tint.opacity(0.15))
+            .overlay {
+                Image(systemName: "mug.fill")
+                    .font(.title2)
+                    .foregroundStyle(.tint)
+            }
+    }
 }
 
 #Preview("Populated") {
