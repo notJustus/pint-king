@@ -16,7 +16,11 @@ struct PendingPint: Identifiable, Equatable, Sendable {
     /// Where a queued pint is in its upload lifecycle. `pending` = still uploading
     /// (or waiting for connectivity); `failed` = gave up after retries, so the row
     /// offers retry / discard.
-    enum Status: Sendable, Equatable {
+    ///
+    /// `Codable` with explicit raw values because this is persisted as part of
+    /// `QueuedPint` (Task 29) — the string on disk should stay readable and
+    /// stable if a future case is added.
+    enum Status: String, Codable, Sendable, Equatable {
         case pending
         case failed
     }
