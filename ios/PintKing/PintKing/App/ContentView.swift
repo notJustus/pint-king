@@ -22,6 +22,11 @@ struct ContentView: View {
     private let authRepository: any AuthRepositoryProtocol
     private let locationPermission: any LocationPermissionRequesting
 
+    /// The app-lifetime holder for a tapped invite link. This is the only screen
+    /// that presents it, because it is the only one that exists once the user is
+    /// signed in and set up (RootView, ADR-0106).
+    private let deepLinkRouter: DeepLinkRouter
+
     init(
         groupRepository: any GroupRepositoryProtocol,
         userRepository: any UserRepositoryProtocol,
@@ -29,7 +34,8 @@ struct ContentView: View {
         pintRepository: any PintRepositoryProtocol,
         mapRepository: any MapRepositoryProtocol,
         authRepository: any AuthRepositoryProtocol,
-        locationPermission: any LocationPermissionRequesting
+        locationPermission: any LocationPermissionRequesting,
+        deepLinkRouter: DeepLinkRouter
     ) {
         self.groupRepository = groupRepository
         self.userRepository = userRepository
@@ -38,6 +44,7 @@ struct ContentView: View {
         self.mapRepository = mapRepository
         self.authRepository = authRepository
         self.locationPermission = locationPermission
+        self.deepLinkRouter = deepLinkRouter
         _model = State(initialValue: RootTabViewModel(groupRepository: groupRepository))
     }
 
@@ -88,6 +95,19 @@ struct ContentView: View {
                 model.isCameraPresented = false
             }
         }
+        .sheet(item: pendingInvite) { invite in
+            // Straight to the confirmation: the link already carries the code, so
+            // the manual code-entry half of the join flow (JoinGroupView) has
+            // nothing to ask. Its own NavigationStack because it is presented
+            // here rather than pushed onto one (Task 21 pushes it).
+            NavigationStack {
+                JoinConfirmationView(
+                    inviteCode: invite.code,
+                    groupRepository: groupRepository,
+                    onJoined: deepLinkRouter.consume
+                )
+            }
+        }
     }
 
     /// A binding whose setter forwards every tap to the view model. This is what
@@ -99,6 +119,27 @@ struct ContentView: View {
             set: { model.select($0) }
         )
     }
+
+    /// The pending invite link as sheet input. Read-through to the router, and
+    /// the setter only ever receives `nil` — SwiftUI reporting a dismissal —
+    /// which is routed back through `consume()` so every way of closing the
+    /// sheet (Join, Cancel, swipe down) releases the code through one path. Were
+    /// it not released, the binding would still read non-nil and re-present the
+    /// sheet immediately. Same shape as JoinGroupView's `confirmingCode`.
+    private var pendingInvite: Binding<PendingInvite?> {
+        Binding(
+            get: { deepLinkRouter.pendingInviteCode.map(PendingInvite.init(id:)) },
+            set: { if $0 == nil { deepLinkRouter.consume() } }
+        )
+    }
+
+    /// `.sheet(item:)` needs an `Identifiable`, and the code *is* the identity:
+    /// a second link for the same code while the sheet is open changes nothing,
+    /// while a different code swaps the sheet's contents.
+    private struct PendingInvite: Identifiable {
+        let id: String
+        var code: String { id }
+    }
 }
 
 #Preview {
@@ -109,6 +150,7 @@ struct ContentView: View {
         pintRepository: MockPintRepository(),
         mapRepository: MockMapRepository(),
         authRepository: MockAuthRepository(authenticated: true),
-        locationPermission: MockLocationPermission()
+        locationPermission: MockLocationPermission(),
+        deepLinkRouter: DeepLinkRouter()
     )
 }

@@ -23,6 +23,12 @@ struct PintKingApp: App {
     @State private var mapRepository = MockMapRepository()
     @State private var locationPermission = CLLocationPermission()
 
+    /// Tapped invite links land here (Task 28). It lives at the app root rather
+    /// than in a screen because a link can arrive while any screen is up — or
+    /// while the user is signed out entirely, in which case the code waits here
+    /// until RootView's gate renders the tab bar that presents it.
+    @State private var deepLinkRouter = DeepLinkRouter()
+
     var body: some Scene {
         WindowGroup {
             RootView(
@@ -32,8 +38,12 @@ struct PintKingApp: App {
                 leaderboardRepository: leaderboardRepository,
                 pintRepository: pintRepository,
                 mapRepository: mapRepository,
-                locationPermission: locationPermission
+                locationPermission: locationPermission,
+                deepLinkRouter: deepLinkRouter
             )
+            // The single URL entry point for the whole app. Anything that isn't
+            // an invite link is ignored by the router.
+            .onOpenURL { deepLinkRouter.handle($0) }
         }
     }
 }

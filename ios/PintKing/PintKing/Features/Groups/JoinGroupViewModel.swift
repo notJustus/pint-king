@@ -35,18 +35,15 @@ final class JoinGroupViewModel {
     /// Non-nil pushes the Join Confirmation screen.
     private(set) var confirmingCode: String?
 
-    /// Invite codes are exactly 8 alphanumeric characters (Property 10).
-    static let codeLength = 8
-
     init() {}
 
     // MARK: - Derived state
 
-    /// True when the code has the right shape to be worth sending. Because the
-    /// setter already strips non-alphanumerics, length is the only thing left to
-    /// check. Drives the Continue button's enabled state.
+    /// True when the code has the right shape to be worth sending — the same
+    /// check the deep-link parser applies to a code lifted out of a URL, so a
+    /// typed code and a tapped one are held to one standard.
     var isCodeValid: Bool {
-        inviteCode.count == Self.codeLength
+        InviteLink.isValidCode(inviteCode)
     }
 
     // MARK: - Actions
@@ -66,11 +63,13 @@ final class JoinGroupViewModel {
 
     // MARK: - Helpers
 
-    /// Keep only alphanumerics, uppercase them, and cap the result at 8 characters.
-    /// Uppercasing is a display convenience for a case-sensitive code — see
-    /// `JoinConfirmationView`, which sends exactly what is shown.
+    /// Keep only characters the server's alphabet allows and cap the result at 8.
+    ///
+    /// Casing is left exactly as typed: the API generates codes from a
+    /// mixed-case alphabet (`a-zA-Z0-9`) and resolves them with an exact match,
+    /// so upper-casing here would turn nearly every real code into a 404 — only
+    /// about 1 code in 400 happens to contain no lowercase letter.
     private static func normalize(_ raw: String) -> String {
-        let alphanumerics = raw.filter { $0.isLetter || $0.isNumber }
-        return String(alphanumerics.uppercased().prefix(codeLength))
+        String(raw.filter(InviteLink.isCodeCharacter).prefix(InviteLink.codeLength))
     }
 }

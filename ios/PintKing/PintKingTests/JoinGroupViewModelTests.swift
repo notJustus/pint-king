@@ -17,15 +17,24 @@ struct JoinGroupViewModelTests {
 
     // MARK: - Code normalisation
 
-    @Test func codeIsUppercased() {
+    @Test func casingIsPreserved() {
+        // The API generates codes from a mixed-case alphabet and matches them
+        // exactly, so normalising case here would 404 nearly every real code.
         let vm = JoinGroupViewModel()
-        vm.inviteCode = "join1234"
-        #expect(vm.inviteCode == "JOIN1234")
+        vm.inviteCode = "aB3dE6fH"
+        #expect(vm.inviteCode == "aB3dE6fH")
     }
 
     @Test func nonAlphanumericCharactersAreStripped() {
         let vm = JoinGroupViewModel()
         vm.inviteCode = "JO-IN 12!34"
+        #expect(vm.inviteCode == "JOIN1234")
+    }
+
+    @Test func nonASCIILettersAreStripped() {
+        // "é" is a letter to Swift but not to the server's alphabet.
+        let vm = JoinGroupViewModel()
+        vm.inviteCode = "JOéIN1234"
         #expect(vm.inviteCode == "JOIN1234")
     }
 

@@ -168,6 +168,57 @@ struct InviteLinkTests {
         #expect(url.host() == InviteLink.host)
         #expect(url.pathComponents == ["/", InviteLink.pathPrefix, "kM9nP2qR"])
     }
+
+    // MARK: - Parsing (Task 28)
+
+    @Test(arguments: ["aB3dE6fH", "ABCD1234", "abcd1234", "00000000"])
+    func buildingThenParsingReturnsTheSameCode(code: String) {
+        // The round trip is the point of keeping both directions in one type,
+        // and casing must survive it — the server's alphabet is mixed-case and
+        // its lookup is exact.
+        #expect(InviteLink.code(from: InviteLink.url(for: code)) == code)
+    }
+
+    @Test func queryItemsOnASharedLinkAreIgnored() {
+        let url = URL(string: "https://pintking.app/join/aB3dE6fH?utm_source=whatsapp")!
+        #expect(InviteLink.code(from: url) == "aB3dE6fH")
+    }
+
+    @Test func schemeAndHostAreMatchedCaseInsensitively() {
+        // Both are case-insensitive per RFC 3986, and a link retyped by hand or
+        // mangled by a share sheet may arrive capitalised.
+        let url = URL(string: "HTTPS://PintKing.App/join/aB3dE6fH")!
+        #expect(InviteLink.code(from: url) == "aB3dE6fH")
+    }
+
+    @Test func trailingSlashIsAccepted() {
+        let url = URL(string: "https://pintking.app/join/aB3dE6fH/")!
+        #expect(InviteLink.code(from: url) == "aB3dE6fH")
+    }
+
+    @Test(arguments: [
+        "https://example.com/join/aB3dE6fH",        // someone else's domain
+        "http://pintking.app/join/aB3dE6fH",        // not https
+        "pintking://join/aB3dE6fH",                 // custom scheme, not a Universal Link
+        "https://pintking.app/joined/aB3dE6fH",     // wrong path prefix
+        "https://pintking.app/join",                // no code
+        "https://pintking.app/join/aB3dE6fH/extra", // deeper path
+        "https://pintking.app/join/aB3dE6f",        // 7 characters
+        "https://pintking.app/join/aB3dE6fHi",      // 9 characters
+        "https://pintking.app/join/aB3-E6fH",       // outside the alphabet
+        "https://pintking.app/",                    // the marketing page
+    ])
+    func nonInviteURLsParseToNil(string: String) {
+        let url = URL(string: string)!
+        #expect(InviteLink.code(from: url) == nil)
+    }
+
+    @Test func percentEncodedNonASCIICodeIsRejected() {
+        // Swift's `isLetter` is true for "é", but the server's alphabet is ASCII
+        // only — so the length check alone would not be enough.
+        let url = URL(string: "https://pintking.app/join/aB3dE6f%C3%A9")!
+        #expect(InviteLink.code(from: url) == nil)
+    }
 }
 
 // MARK: - QRCodeGenerator

@@ -24,6 +24,7 @@ struct RootView: View {
     private let pintRepository: any PintRepositoryProtocol
     private let mapRepository: any MapRepositoryProtocol
     private let locationPermission: any LocationPermissionRequesting
+    private let deepLinkRouter: DeepLinkRouter
 
     /// Whether the first-login Profile Setup step is done for this session. The
     /// setup screen is shown after auth until this flips true.
@@ -36,7 +37,8 @@ struct RootView: View {
         leaderboardRepository: any LeaderboardRepositoryProtocol,
         pintRepository: any PintRepositoryProtocol,
         mapRepository: any MapRepositoryProtocol,
-        locationPermission: any LocationPermissionRequesting
+        locationPermission: any LocationPermissionRequesting,
+        deepLinkRouter: DeepLinkRouter
     ) {
         self.authRepository = authRepository
         self.groupRepository = groupRepository
@@ -45,6 +47,7 @@ struct RootView: View {
         self.pintRepository = pintRepository
         self.mapRepository = mapRepository
         self.locationPermission = locationPermission
+        self.deepLinkRouter = deepLinkRouter
     }
 
     var body: some View {
@@ -58,6 +61,12 @@ struct RootView: View {
                 onComplete: { didCompleteSetup = true }
             )
         } else {
+            // The deep-link router is handed to this branch *only*. That is the
+            // whole implementation of "hold an invite link until after login":
+            // while the two branches above are on screen nothing is subscribed
+            // to `pendingInviteCode`, so a code parsed during sign-in simply
+            // waits, and this branch presents it the moment it renders
+            // (ADR-0106).
             ContentView(
                 groupRepository: groupRepository,
                 userRepository: userRepository,
@@ -65,7 +74,8 @@ struct RootView: View {
                 pintRepository: pintRepository,
                 mapRepository: mapRepository,
                 authRepository: authRepository,
-                locationPermission: locationPermission
+                locationPermission: locationPermission,
+                deepLinkRouter: deepLinkRouter
             )
         }
     }
@@ -79,7 +89,8 @@ struct RootView: View {
         leaderboardRepository: MockLeaderboardRepository(),
         pintRepository: MockPintRepository(),
         mapRepository: MockMapRepository(),
-        locationPermission: MockLocationPermission()
+        locationPermission: MockLocationPermission(),
+        deepLinkRouter: DeepLinkRouter()
     )
 }
 
@@ -91,6 +102,7 @@ struct RootView: View {
         leaderboardRepository: MockLeaderboardRepository(),
         pintRepository: MockPintRepository(),
         mapRepository: MockMapRepository(),
-        locationPermission: MockLocationPermission()
+        locationPermission: MockLocationPermission(),
+        deepLinkRouter: DeepLinkRouter()
     )
 }

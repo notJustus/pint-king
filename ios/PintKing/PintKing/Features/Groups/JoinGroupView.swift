@@ -49,11 +49,13 @@ struct JoinGroupView: View {
         NavigationStack {
             Form {
                 Section("Invite code") {
-                    TextField("ABCD1234", text: $model.inviteCode)
+                    TextField("aB3dE6fH", text: $model.inviteCode)
                         .font(.title2.monospaced())
-                        .textInputAutocapitalization(.characters)
+                        // Codes are case-sensitive on the server, so the keyboard
+                        // must not helpfully capitalise the first character.
+                        .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                    Text("\(model.inviteCode.count)/\(JoinGroupViewModel.codeLength)")
+                    Text("\(model.inviteCode.count)/\(InviteLink.codeLength)")
                         .font(.caption2)
                         .foregroundStyle(model.isCodeValid ? Color.secondary : Color.red)
                         .frame(maxWidth: .infinity, alignment: .trailing)
