@@ -138,6 +138,7 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0102 | The map endpoint gets its own `MapPin` model (author joined in, location non-optional) rather than reusing `PintLog`; the viewport lives in the view model as a `MapBoundingBox`, converted from the settled map camera region; the first load asks for the whole world so the camera has pins to frame | Accepted (revisit) |
 | 0103 | The map's selected pin is view-model state, not view `@State`, because it must be reconciled against every re-fetch — a pin the latest query no longer returns takes its callout with it; the callout itself is a popover anchored to the annotation, so the system supplies the anchoring and the tap-outside dismissal | Accepted (revisit) |
 | 0104 | NetworkClient is an `actor` that reads tokens through a `TokenStoring` seam (not AuthRepository, which would be a cycle), coalesces concurrent refreshes onto one in-flight task because refresh tokens are single-use, and reports an unrecoverable session by callback so RootView's declarative gate does the navigating | Accepted (revisit) |
+| 0105 | `KeychainService` files every item under one `kSecAttrService`, making it the app's partition of the keychain — so `deleteAll()` is a single query that also catches keys retired by an older build; the wrapper throws `OSStatus` while `KeychainTokenStore` swallows into nil, because "signed out" is a decision about tokens, not about storage; the pair is `AfterFirstUnlockThisDeviceOnly` so background uploads can read it but a restored backup cannot | Accepted (revisit) |
 
 ---
 
@@ -2699,3 +2700,47 @@ Task 26 (tasks-ios.md, l3-ios-app.md §6) builds the real networking layer: a UR
 - Nothing is wired up yet — no repository uses the client, and no base URL is configured. The mocks still back every screen. That swap is a later task, and it is where two **wire mismatches found while writing this** will have to be resolved: `User` carries `appleId`, which `GET /users/me` does not return, and `PintLog` nests `location`, which the API sends flat as `latitude`/`longitude`. Both decode fine against the mocks and would fail against the real server.
 - `MultipartFormData` is framed by hand (URLSession has no builder). Its exact bytes are unit-tested because one missing CRLF fails the whole upload with a message that will not name the cause.
 - **Revisit when:** (a) Task 27 lands the Keychain store — `InMemoryTokenStore` should survive only as a test double; (b) the real repositories arrive and the two model/wire mismatches above come due; (c) 400/422 responses need their field-level error bodies surfaced (the API sends a `FieldError` list that `.validationFailed` currently discards); (d) uploads need progress reporting or background sessions, which `session.data(for:)` cannot provide.
+
+---
+
+## ADR-0105: `KeychainService` partitions the keychain by `service` so `deleteAll()` is one query; it throws while `KeychainTokenStore` swallows; tokens are `AfterFirstUnlockThisDeviceOnly`
+
+Status: Accepted (revisit)
+Date: 2026-08-01
+
+### Context
+
+Task 26 left `TokenStoring` backed by `InMemoryTokenStore`, with the note that Task 27 would swap in the real thing. The Security framework is a C API — four functions taking a `CFDictionary` and returning an `OSStatus` — so the questions are about the shape of the wrapper, not the mechanism.
+
+1. **What does `deleteAll()` mean?** The obvious reading is "loop over `KeychainKey.allCases` and delete each", which is only correct for keys the *current* build knows about.
+2. **Should the wrapper throw?** `TokenStoring` deliberately does not (ADR-0104: a storage failure is indistinguishable, *to the client*, from "not signed in"). Does that non-throwing contract propagate down to the Security calls themselves?
+3. **When must the tokens be readable, and should they survive a device migration?** Two `kSecAttrAccessible` choices with real consequences.
+4. **Can this be tested?** A wrapper over a global, process-external store, tested in parallel, on a simulator whose keychain persists between runs.
+
+### Decision
+
+**Every item is written under a single `kSecAttrService` string, which makes that string the app's private partition of the keychain.** That is what lets `deleteAll()` be one `SecItemDelete` with a query carrying no `account` — it matches everything the app owns, including keys retired by an older build that a loop over `KeychainKey.allCases` would silently orphan. The partition is also the test isolation mechanism: each suite instance constructs a `KeychainService(service: "com.pintking.tests.<UUID>")`, so parallel tests cannot see each other's items and cannot touch the app's, and `deleteAllOnlyClearsItsOwnService` asserts exactly that boundary.
+
+**`KeychainService` throws; `KeychainTokenStore` swallows.** The two error contracts meet at the adapter, on purpose. A wrapper over the Security framework should not pretend a failure did not happen — so `save`/`delete`/`deleteAll` throw `KeychainError.unexpectedStatus(OSStatus)`, and `load` throws too, returning nil only for `errSecItemNotFound`, because "the read failed" and "nothing is stored" are different facts at that level. They stop being different one layer up, where ADR-0104 already decided both mean "signed out", so `KeychainTokenStore` is where the `try?` lives — once, visibly, in the type whose job is to answer that question. `save` is an upsert (`SecItemDelete` then `SecItemAdd`, because `SecItemAdd` returns `errSecDuplicateItem` on a second write) and `delete` treats `errSecItemNotFound` as success: the caller asked for it to be gone, and it is.
+
+**Accessibility is `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`.** `AfterFirstUnlock` rather than `WhenUnlocked` because a queued pint upload can run in the background with the device locked and needs the JWT to do it. `ThisDeviceOnly` because the pair is a live session: keeping it out of iCloud Keychain and encrypted backups means restoring a backup onto a new device does not carry someone's session with it, and the cost of that is one Sign in with Apple tap.
+
+**The token pair is two items, so `KeychainTokenStore` treats a half-pair as signed out and clears on a partial write.** `load()` returns nil unless both halves decode — a lone JWT is unusable once it expires and a lone refresh token is not a session, so there is nothing to hand the client. `save()` clearing on a failed second write is the sharper case: the alternative is a new JWT sitting beside the *previous* refresh token, and replaying a spent refresh token invalidates the entire family server-side (l3-api.md Property 5). Turning that into a plain logout is strictly better than a session that dies confusingly later.
+
+### Alternatives Considered
+
+- **`deleteAll()` as a loop over `KeychainKey.allCases`:** rejected — correct only for the keys this build declares, and "clear the session" should mean everything the app has ever stored.
+- **A non-throwing `KeychainService` (push ADR-0104's contract all the way down):** rejected — it would make `save` and `deleteAll` unable to report an OSStatus at the only layer that knows what an OSStatus is. Swallowing is a decision about *what a token means*, so it belongs in the token store, not the keychain wrapper.
+- **`KeychainService` conforming to `TokenStoring` directly:** rejected — it would fold the `Tokens` type, the half-pair rule, and UTF-8 encoding into a general-purpose data wrapper. The two roles split cleanly: one speaks `Data` and `OSStatus`, the other speaks sessions.
+- **`kSecAttrAccessibleWhenUnlocked`:** rejected — the background upload queue (ADR-0023) would fail on a locked device with no way to explain it.
+- **Syncable items (no `ThisDeviceOnly`):** rejected — convenient for a user with two devices, but it puts a live session in iCloud Keychain and in every encrypted backup, and re-authenticating with Apple is nearly free.
+- **A protocol over `KeychainService` so the store could be tested against a fake:** rejected — the entire risk in this file is whether the `CFDictionary` queries are right, which a fake cannot exercise. The tests hit the real simulator keychain; the `service` parameter already gives them isolation.
+- **Storing the pair as one JSON blob under a single key:** rejected — it removes the half-pair case, but only by making every read and write a serialisation round-trip, and the half-pair rule is three lines.
+
+### Consequences
+
+- 15 new tests (10 `KeychainServiceTests`, 5 `KeychainTokenStoreTests`) running against the real simulator keychain. Full suite **360 pass**.
+- The tests write to the actual keychain, so they leave traces if a run is killed mid-suite. Each suite is a `final class` whose `deinit` clears its partition, and the partitions are UUID-named, so the worst case is a few orphaned items under a service string nothing will ever query again.
+- `InMemoryTokenStore` is now a test double only; its doc comment says so.
+- Nothing is wired up yet — `PintKingApp` still constructs only mock repositories, and no `NetworkClient` exists at runtime. The line `KeychainTokenStore()` is the whole integration, and it lands with the real repositories.
+- **Revisit when:** (a) the real repositories arrive and the app edge constructs the store — that is also when "signed in on launch" becomes a keychain read, and the app has to decide what to show while it happens; (b) anything other than tokens needs storing (an Apple user identifier for `getCredentialState`, say) — `KeychainKey` grows a case and `deleteAll()` keeps working unchanged; (c) a repeated `errSecMissingEntitlement` on a real device forces a keychain-sharing entitlement, which the simulator will not reveal (Task 30's on-device pass is the check).
