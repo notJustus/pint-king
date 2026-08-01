@@ -9,9 +9,9 @@
 //
 //  A thin renderer over GroupListViewModel — all state and loading live there.
 //  Create and Join are self-presenting sheets owned here (ADR-0098); Group Detail
-//  lands in Task 22, so it stays an injected closure defaulting to `{}` — the
-//  "wire the destination later" convention used by the group switcher (Task 8)
-//  and profile rows (Task 15).
+//  is a value-based push, the whole `GroupSummary` riding the nav path as its own
+//  route value (same shape as the Home tab's `MemberRoute` and the Profile tab's
+//  `ProfileRoute`), so this screen has no navigation closures left.
 //
 
 import SwiftUI
@@ -28,19 +28,18 @@ struct GroupListView: View {
     /// same reason as the Create sheet.
     @State private var isJoiningGroup = false
 
-    /// The repository, retained so it can be threaded into the Create/Join sheets.
+    /// Repositories retained so they can be threaded into the Create/Join sheets
+    /// and the Group Detail destination.
     private let groupRepository: any GroupRepositoryProtocol
-
-    /// Opens Group Detail for the tapped group (Task 22).
-    private let onSelect: (GroupSummary) -> Void
+    private let userRepository: any UserRepositoryProtocol
 
     init(
         groupRepository: any GroupRepositoryProtocol,
-        onSelect: @escaping (GroupSummary) -> Void = { _ in }
+        userRepository: any UserRepositoryProtocol
     ) {
         _model = State(initialValue: GroupListViewModel(groupRepository: groupRepository))
         self.groupRepository = groupRepository
-        self.onSelect = onSelect
+        self.userRepository = userRepository
     }
 
     /// Opens the Create Group sheet.
@@ -53,10 +52,9 @@ struct GroupListView: View {
         List {
             if model.hasGroups {
                 ForEach(model.groups) { group in
-                    Button { onSelect(group) } label: {
+                    NavigationLink(value: group) {
                         groupRow(group)
                     }
-                    .foregroundStyle(.primary)
                 }
             } else if model.isLoading {
                 // First-load skeleton: a few redacted placeholder rows.
@@ -72,6 +70,18 @@ struct GroupListView: View {
             }
         }
         .navigationTitle("My Groups")
+        .navigationDestination(for: GroupSummary.self) { group in
+            GroupDetailView(
+                group: group,
+                groupRepository: groupRepository,
+                userRepository: userRepository
+            )
+            // Detail can rename, remove members, or leave — all of which change
+            // this list's rows. Refreshing when it goes away covers every case
+            // without the detail screen knowing a list exists (`.task` above only
+            // runs once, and does not re-run on a pop).
+            .onDisappear { Task { await model.refresh() } }
+        }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Menu {
@@ -124,10 +134,6 @@ struct GroupListView: View {
                     .background(.tint.opacity(0.15), in: Capsule())
                     .foregroundStyle(.tint)
             }
-
-            Image(systemName: "chevron.right")
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(.tertiary)
         }
         .padding(.vertical, 4)
     }
@@ -155,12 +161,18 @@ struct GroupListView: View {
 
 #Preview("Has groups") {
     NavigationStack {
-        GroupListView(groupRepository: MockGroupRepository())
+        GroupListView(
+            groupRepository: MockGroupRepository(),
+            userRepository: MockUserRepository()
+        )
     }
 }
 
 #Preview("Empty") {
     NavigationStack {
-        GroupListView(groupRepository: MockGroupRepository(groups: [], activeGroupId: nil))
+        GroupListView(
+            groupRepository: MockGroupRepository(groups: [], activeGroupId: nil),
+            userRepository: MockUserRepository()
+        )
     }
 }

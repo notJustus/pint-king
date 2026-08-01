@@ -77,9 +77,10 @@ struct ProfileView: View {
             case .myPints:
                 MyPintsView(groupRepository: groupRepository, pintRepository: pintRepository)
             case .groupList:
-                // Create / Join / Detail destinations arrive in Tasks 20–22; the
-                // list renders and its actions are inert until then.
-                GroupListView(groupRepository: groupRepository)
+                GroupListView(
+                    groupRepository: groupRepository,
+                    userRepository: userRepository
+                )
             case .settings:
                 SettingsView(authRepository: authRepository, locationPermission: locationPermission)
             }

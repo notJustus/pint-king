@@ -13,7 +13,9 @@
 
 import Foundation
 
-struct GroupSummary: Codable, Equatable, Identifiable, Sendable {
+// `Hashable` so the whole summary can ride a NavigationPath as the value-based
+// nav value for Group Detail (Task 22) — every field already is.
+struct GroupSummary: Codable, Equatable, Hashable, Identifiable, Sendable {
     let id: UUID
     let name: String
     let inviteCode: String
