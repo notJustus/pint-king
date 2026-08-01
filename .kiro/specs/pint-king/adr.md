@@ -135,6 +135,7 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0099 | Join flow is two screens: local format validation on code entry, with the join (and all of 404/409/403) performed on the confirmation screen — which shows the invite code, not the group name, as no API resolves a code before joining | Accepted (revisit) |
 | 0100 | Group Detail derives the caller's role from the freshly-loaded member list (not the `GroupSummary` that opened it); the three leave outcomes are a `LeaveOutcome` enum computed client-side and gated in `leave()`; the group list refreshes on the destination's `onDisappear` | Accepted (revisit) |
 | 0101 | The invite code is the Invite screen's only state — link and QR are derived from it; the link format lives in one `InviteLink` namespace shared with the deep-link parser; the screen takes code + `isAdmin` as inputs from Group Detail rather than re-fetching | Accepted (revisit) |
+| 0102 | The map endpoint gets its own `MapPin` model (author joined in, location non-optional) rather than reusing `PintLog`; the viewport lives in the view model as a `MapBoundingBox`, converted from the settled map camera region; the first load asks for the whole world so the camera has pins to frame | Accepted (revisit) |
 
 ---
 
@@ -2573,3 +2574,49 @@ Task 23 (tasks-ios.md, requirements §5.4 and §5.10, l3-ios-app.md §"Regenerat
 - `MockGroupRepository` gained `shouldFailRegenerate` (throwing `.serverError`), joining `shouldFailCreate` / `shouldFailLogin` / `shouldFailDelete`.
 - `InviteLink` is written but only half-used: Task 28 supplies the parser and the `apple-app-site-association` file must be served from `pintking.app` before any real link resolves. Until then the link is shareable but only the 8-character code path actually joins a group.
 - **Revisit when:** Task 26 wires the real API — `regenerateInviteCode` will return 403 for a stale-admin caller, which the current generic copy renders as "Couldn't regenerate the invite code"; that is the point to decide whether a role change mid-session deserves its own message and a forced reload (the same open question ADR-0100 left for the admin actions). Task 28 also decides whether `InviteLink` grows a `code(from:)` inverse here or a fuller route parser.
+
+
+---
+
+## ADR-0102: The map endpoint gets its own `MapPin` model; the viewport is view-model state derived from the settled camera region; the first load is unbounded
+
+Status: Accepted (revisit)
+Date: 2026-08-01
+
+### Context
+Task 24 (tasks-ios.md, requirements §6.8, l3-ios-app.md §"Home Tab") builds the map: MapKit showing the Active_Group's located pints as avatar pins, greyed for former members, with a Personal/Group toggle, re-querying the API by bounding box as the viewport moves. Three questions came up.
+
+1. **What type is a pin?** The repository protocol written in Task 3 returned `[PintLog]`. But a pin has to render its author's avatar and name and know whether that author has left the group — none of which `PintLog` carries — and `PintLog.location` is optional while a pin's cannot be.
+2. **Who owns the viewport?** MapKit owns the camera. The API is queried by corner coordinates. Something has to convert one into the other, and something has to decide when a move is worth a fetch.
+3. **What box does the *first* fetch use, before the map has reported a region?** The camera wants to frame the pins; the pins come from a query that needs a camera. That is a cycle.
+
+### Decision
+**A `MapPin` domain model, mirroring the API's `MapPin` response.** `GET /pints/map` does not return pint rows — `MapService` joins the author in (`displayName`, `avatarUrl`), derives `isFormerMember` from the current member list, and flattens the location to non-optional `latitude`/`longitude` because unlocated pints are filtered out in the query (Property 24c). The iOS model mirrors that exactly, and `MapRepositoryProtocol.getPintsInBoundingBox` returns `[MapPin]`. This is the third instance of "one type per endpoint" (ADR-0079, and `GroupSummary` in ADR-0097): the shape the server sends *is* the shape the client holds, so there is no mapping layer to keep in step and no optional the screen has to defend against. The former-member flag arriving from the server also means the map never needs the member list — one fetch draws the whole screen.
+
+**The viewport lives in `MapViewModel` as a `MapBoundingBox`, not in the view.** It is a query parameter, not a camera: the view owns where the camera is pointing, and each time the camera settles it hands the region down via `regionChanged(to:)`, which converts it to corners, stores it, and re-queries. The conversion (centre ± half the span, clamped to ±90/±180 because a zoomed-out camera can span past the poles and PostGIS is entitled to reject that) lives in `MapBoundingBox.init(region:)` — a value type, so the one piece of geometry on this screen is unit-tested directly rather than inline in a view builder.
+
+**Re-fetching is gated on the box changing, and on the gesture ending.** `.onMapCameraChange(frequency: .onEnd)` fires when a pan or zoom settles rather than every frame, so no debounce is needed in the view model; `regionChanged(to:)` then no-ops on an identical box, which absorbs the map's initial region report when it matches what is already loaded.
+
+**The first load asks for the whole world** (`MapBoundingBox.world`), which breaks the camera/query cycle: pins come back, and the view's `.automatic` camera position frames them, so the map opens on the group's pints rather than on an arbitrary default region. This is knowingly the heaviest possible query, and it is the part of this ADR most likely to need revisiting.
+
+**The Leaderboard/Map toggle is view `@State` on `HomeView`,** a private `HomeSection` enum. It has no rules attached — no fetching, no validation, nothing another screen reads — so it does not earn a view model, the same line drawn for Group Detail's "which prompt is up" (ADR-0100).
+
+**Scope defaults to `.group`**, matching the API's default when `?scope=` is omitted, and `select(_:)` no-ops when unchanged — the same shape as the leaderboard's period picker (ADR-0087).
+
+### Alternatives Considered
+- **Keep returning `[PintLog]` and fetch the member list alongside to resolve names and former-member status:** rejected — it re-derives client-side what the server already computed, needs a second request, and leaves `location` optional on a type where it cannot be nil. It would also disagree with the API on who counts as a former member the moment membership changed between the two fetches.
+- **Add `displayName` / `avatarUrl` / `isFormerMember` to `PintLog`:** rejected — they are meaningless for the other five endpoints that return pints (My Pints, member history, create/edit). The same argument that kept upload status off `PintLog` in ADR-0095.
+- **Keep the viewport in the view and pass corners into `load()`:** rejected — the view model would then hold pins it could not re-fetch (a scope change would need the view to supply the box again), and the corner arithmetic would be untestable.
+- **Debounce region changes with a timer:** rejected as unnecessary — `.onEnd` already collapses a gesture into one callback. A timer would add latency and a second source of "when do we fetch".
+- **Open the camera on the user's location instead of the pins:** rejected for now — it needs a location fix before the map can draw, and if the user is not where they drink the map opens empty. Framing the pins is deterministic and needs no permission.
+- **Hardcode an initial region:** rejected outright — it would bake the fixtures' geography (London) into production code.
+- **Replace the map with an empty state when there are no pins:** rejected — the map is still the thing you would pan to look elsewhere, so the empty state is a capsule *over* the map, not instead of it.
+
+### Consequences
+- 12 new tests (11 `MapViewModelTests` + 1 `MockRepositoriesTests` for the author join). Full suite **288 pass**.
+- `MockMapRepository` now performs the same join the API does (name from `MockData.displayNames`, former-member from `MockData.members(of:)`) and records every `Query` it serves, so tests can assert re-fetch counts as well as results.
+- `MockData` gained a single `displayNames` table keyed by user id; `member(...)` and `entry(...)` now read names from it instead of taking them as literals. The map needed it because a pin's author may be a *former* member, whose name is by definition not in the member list.
+- Two existing mock-repo tests changed shape: `mapNeverReturnsUnlocatedPints` can no longer assert `location != nil` (the type guarantees it), so it asserts the pin count equals the located-pint count — the drop, not the field.
+- `HomeView` now takes a fourth repository and hosts the section picker; `mapRepository` is threaded `PintKingApp → RootView → ContentView → HomeView`.
+- Avatar pins are initials placeholders, like every other avatar in the app, until networking (Task 26). Tapping a pin does nothing until Task 25 adds the callout.
+- **Revisit when:** (a) Task 26 wires the real API — an unbounded first query over a large group is a real cost, and that is the point to decide between an initial fetch capped to a sensible radius, a server-side pin limit, or waiting for the map's first reported region; (b) Task 25 adds the callout, which needs the pin's photo and so is the first consumer of `MapPin.photoUrl`; (c) clustering, if a dense group makes overlapping pins unreadable.
