@@ -8,8 +8,8 @@
 //  state with Create/Join buttons.
 //
 //  A thin renderer over GroupSwitcherViewModel — all the state and the switch
-//  side effect live there. Create/Join are handed up as closures; the real
-//  navigation targets land in Tasks 19–21.
+//  side effect live there. Create and Join are self-presenting sheets owned here
+//  (ADR-0098), so the empty state needs nothing threaded in from Home.
 //
 
 import SwiftUI
@@ -22,23 +22,23 @@ struct GroupSwitcherView: View {
     /// and needs the same `groupRepository`.
     @State private var isCreatingGroup = false
 
-    /// The repository, retained so it can be threaded into the Create Group sheet.
+    /// True while the Join Group sheet is presented (Task 21). Owned here for the
+    /// same reason as the Create sheet.
+    @State private var isJoiningGroup = false
+
+    /// The repository, retained so it can be threaded into the Create/Join sheets.
     private let groupRepository: any GroupRepositoryProtocol
 
-    /// Invoked from the empty state's "Join" button (Group join, Task 21).
-    private let onJoin: () -> Void
-
-    init(
-        groupRepository: any GroupRepositoryProtocol,
-        onJoin: @escaping () -> Void = {}
-    ) {
+    init(groupRepository: any GroupRepositoryProtocol) {
         _model = State(initialValue: GroupSwitcherViewModel(groupRepository: groupRepository))
         self.groupRepository = groupRepository
-        self.onJoin = onJoin
     }
 
     /// Opens the Create Group sheet.
     private func onCreate() { isCreatingGroup = true }
+
+    /// Opens the Join Group sheet.
+    private func onJoin() { isJoiningGroup = true }
 
     var body: some View {
         SwiftUI.Group {
@@ -54,6 +54,14 @@ struct GroupSwitcherView: View {
                 // New group created (and set active); dismiss the sheet. The
                 // switcher reads the active group live, so Home re-renders on its own.
                 isCreatingGroup = false
+                Task { await model.load() }
+            }
+        }
+        .sheet(isPresented: $isJoiningGroup) {
+            JoinGroupView(groupRepository: groupRepository) {
+                // Joined (and set active); dismiss the sheet. The switcher reads
+                // the active group live, so Home re-renders on its own.
+                isJoiningGroup = false
                 Task { await model.load() }
             }
         }

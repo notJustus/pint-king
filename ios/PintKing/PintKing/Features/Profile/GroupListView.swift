@@ -8,9 +8,10 @@
 //  Group Detail.
 //
 //  A thin renderer over GroupListViewModel — all state and loading live there.
-//  The three destinations (Create, Join, Detail) land in Tasks 20–22, so they're
-//  injected as closures defaulting to `{}` — the "wire the destination later"
-//  convention used by the group switcher (Task 8) and profile rows (Task 15).
+//  Create and Join are self-presenting sheets owned here (ADR-0098); Group Detail
+//  lands in Task 22, so it stays an injected closure defaulting to `{}` — the
+//  "wire the destination later" convention used by the group switcher (Task 8)
+//  and profile rows (Task 15).
 //
 
 import SwiftUI
@@ -23,27 +24,30 @@ struct GroupListView: View {
     /// needs the same `groupRepository`.
     @State private var isCreatingGroup = false
 
-    /// The repository, retained so it can be threaded into the Create Group sheet.
+    /// True while the Join Group sheet is presented (Task 21). Owned here for the
+    /// same reason as the Create sheet.
+    @State private var isJoiningGroup = false
+
+    /// The repository, retained so it can be threaded into the Create/Join sheets.
     private let groupRepository: any GroupRepositoryProtocol
 
-    /// Opens Join Group (Task 21).
-    private let onJoin: () -> Void
     /// Opens Group Detail for the tapped group (Task 22).
     private let onSelect: (GroupSummary) -> Void
 
     init(
         groupRepository: any GroupRepositoryProtocol,
-        onJoin: @escaping () -> Void = {},
         onSelect: @escaping (GroupSummary) -> Void = { _ in }
     ) {
         _model = State(initialValue: GroupListViewModel(groupRepository: groupRepository))
         self.groupRepository = groupRepository
-        self.onJoin = onJoin
         self.onSelect = onSelect
     }
 
     /// Opens the Create Group sheet.
     private func onCreate() { isCreatingGroup = true }
+
+    /// Opens the Join Group sheet.
+    private func onJoin() { isJoiningGroup = true }
 
     var body: some View {
         List {
@@ -85,6 +89,14 @@ struct GroupListView: View {
                 // New group created (and set active); dismiss the sheet and refresh
                 // so it appears in the list.
                 isCreatingGroup = false
+                Task { await model.refresh() }
+            }
+        }
+        .sheet(isPresented: $isJoiningGroup) {
+            JoinGroupView(groupRepository: groupRepository) {
+                // Joined (and set active); dismiss the sheet and refresh so the
+                // new group appears in the list.
+                isJoiningGroup = false
                 Task { await model.refresh() }
             }
         }

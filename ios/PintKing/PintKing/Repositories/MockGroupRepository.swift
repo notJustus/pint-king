@@ -83,6 +83,11 @@ final class MockGroupRepository: GroupRepositoryProtocol {
         if groups.contains(where: { $0.inviteCode == inviteCode }) {
             throw APIError.conflict
         }
+        // Removed from this group by an admin — the code resolves but the join is
+        // refused (Property 11c).
+        if inviteCode == MockData.blockedInviteCode {
+            throw APIError.forbidden
+        }
         guard inviteCode == MockData.joinableInviteCode else {
             throw APIError.notFound
         }

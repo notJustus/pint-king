@@ -89,6 +89,11 @@ enum MockData {
         createdAt: date(daysAgo: 10)
     )
 
+    /// An invite code the current user is blocked from (removed by an admin), so
+    /// `joinGroup` has a real 403 case to return (Property 11c). No group object —
+    /// the join never gets far enough to need one.
+    static let blockedInviteCode = "BLOCKED1"
+
     // MARK: - Members (denormalised with display name + avatar)
 
     static func members(of groupId: UUID) -> [GroupMember] {
