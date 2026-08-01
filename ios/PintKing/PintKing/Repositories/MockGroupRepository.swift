@@ -27,6 +27,11 @@ final class MockGroupRepository: GroupRepositoryProtocol {
     /// so the Create Group screen's error path can be exercised without a backend.
     var shouldFailCreate = false
 
+    /// When true, the next `regenerateInviteCode(groupId:)` throws `.serverError`
+    /// instead of rotating the code, so the Invite screen's failure path can be
+    /// exercised without a backend.
+    var shouldFailRegenerate = false
+
     init(
         groups: [Group] = MockData.groups,
         activeGroupId: UUID? = MockData.currentUser.activeGroupId,
@@ -129,7 +134,10 @@ final class MockGroupRepository: GroupRepositoryProtocol {
     }
 
     func regenerateInviteCode(groupId: UUID) async throws -> Group {
-        try replaceGroup(groupId) { g in
+        if shouldFailRegenerate {
+            throw APIError.serverError
+        }
+        return try replaceGroup(groupId) { g in
             Group(id: g.id, name: g.name, inviteCode: Self.randomInviteCode(),
                   createdBy: g.createdBy, createdAt: g.createdAt)
         }

@@ -13,6 +13,7 @@
 
 import Foundation
 import Testing
+import UIKit
 @testable import PintKing
 
 // MARK: - InitialsGenerator
@@ -138,5 +139,64 @@ struct ImageValidatorTests {
         #expect(throws: ImageValidationError.tooLarge(maxBytes: ImageAsset.avatar.maxBytes)) {
             try ImageValidator.validate(Data(bytes), as: .avatar)
         }
+    }
+}
+
+// MARK: - InviteLink
+
+/// Task 23: the invite link format. One namespace owns it because two features
+/// sit on opposite ends — the Invite screen builds links, the deep-link handler
+/// (Task 28) parses them.
+struct InviteLinkTests {
+
+    @Test func linkIsHttpsHostAndJoinPath() {
+        #expect(
+            InviteLink.url(for: "aB3dE6fH").absoluteString
+                == "https://pintking.app/join/aB3dE6fH"
+        )
+    }
+
+    @Test func codeCasingIsPreserved() {
+        // Invite codes are case-sensitive on the server, so the link must not
+        // normalise them.
+        #expect(InviteLink.url(for: "abcd1234") != InviteLink.url(for: "ABCD1234"))
+    }
+
+    @Test func componentsMatchWhatTheDeepLinkHandlerWillParse() {
+        let url = InviteLink.url(for: "kM9nP2qR")
+        #expect(url.scheme == "https")
+        #expect(url.host() == InviteLink.host)
+        #expect(url.pathComponents == ["/", InviteLink.pathPrefix, "kM9nP2qR"])
+    }
+}
+
+// MARK: - QRCodeGenerator
+
+/// Task 23: the QR code shown on the Invite screen. Every test scans the
+/// generated image back with CoreImage's detector, so what is asserted is that a
+/// scanner reads the right link — not merely that pixels were produced.
+struct QRCodeGeneratorTests {
+
+    @Test func generatedCodeScansBackToTheOriginalString() throws {
+        let link = InviteLink.url(for: "aB3dE6fH").absoluteString
+        let image = try #require(QRCodeGenerator.image(for: link))
+        #expect(QRDecoder.decode(image) == link)
+    }
+
+    @Test func differentCodesProduceDifferentQRCodes() throws {
+        let first = try #require(QRCodeGenerator.image(for: "https://pintking.app/join/AAAA1111"))
+        let second = try #require(QRCodeGenerator.image(for: "https://pintking.app/join/BBBB2222"))
+        #expect(QRDecoder.decode(first) != QRDecoder.decode(second))
+    }
+
+    @Test func emptyStringProducesNoImage() {
+        #expect(QRCodeGenerator.image(for: "") == nil)
+    }
+
+    @Test func imageIsScaledUpFromTheModuleGrid() throws {
+        // CoreImage emits one pixel per module; the generator scales before
+        // rasterising so the code is crisp at display size rather than blurry.
+        let image = try #require(QRCodeGenerator.image(for: "https://pintking.app/join/aB3dE6fH", scale: 10))
+        #expect(image.size.width >= 200)
     }
 }

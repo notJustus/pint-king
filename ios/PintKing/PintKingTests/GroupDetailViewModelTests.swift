@@ -74,6 +74,21 @@ struct GroupDetailViewModelTests {
         #expect(vm.isLoading == false)
     }
 
+    @Test func loadRefreshesTheInviteCodeUsedByTheInviteScreen() async {
+        let (vm, repo) = adminOfGroupWithMembers()
+        // Seeded from the row that opened the screen…
+        #expect(vm.inviteCode == MockData.friday.inviteCode)
+
+        // …and re-read on every fetch, so a code rotated on the Invite screen is
+        // what gets pushed the next time it opens.
+        _ = try! await repo.regenerateInviteCode(groupId: MockData.fridayId)
+        await vm.load()
+
+        let current = try! await repo.getGroupDetail(groupId: MockData.fridayId)
+        #expect(vm.inviteCode == current.group.inviteCode)
+        #expect(vm.inviteCode != MockData.friday.inviteCode)
+    }
+
     // MARK: - Admin gating
 
     @Test func adminActionsVisibleForAdmin() async {

@@ -9,9 +9,11 @@
 //  what leaving does) is derived there. The view's own @State holds only what is
 //  purely presentational: which prompt is on screen and which member it targets.
 //
-//  The Invite screen is Task 23, so that row calls an injected closure defaulting
-//  to `{}` — the "wire the destination later" convention used by the group
-//  switcher (Task 8) and profile rows (Task 15).
+//  The Invite screen is a value-based push on an `InviteRoute` built from this
+//  screen's freshly-loaded state (the code and `isAdmin`), so the Invite screen
+//  needs no fetch of its own — the same "route value, not DTO" shape as the Home
+//  tab's `MemberRoute`. It refreshes this screen on the way back, because
+//  regenerating changes the code shown here.
 //
 //  Avatars are initials placeholders until networking (Task 26), matching the
 //  leaderboard, history, and profile screens.
@@ -39,27 +41,31 @@ struct GroupDetailView: View {
 
     @Environment(\.dismiss) private var dismiss
 
-    /// Opens the Invite screen (Task 23).
-    private let onInvite: () -> Void
+    /// Retained so the Invite destination can be built with it.
+    private let groupRepository: any GroupRepositoryProtocol
 
     init(
         group: GroupSummary,
         groupRepository: any GroupRepositoryProtocol,
-        userRepository: any UserRepositoryProtocol,
-        onInvite: @escaping () -> Void = {}
+        userRepository: any UserRepositoryProtocol
     ) {
         _model = State(initialValue: GroupDetailViewModel(
             group: group,
             groupRepository: groupRepository,
             userRepository: userRepository
         ))
-        self.onInvite = onInvite
+        self.groupRepository = groupRepository
     }
 
     var body: some View {
         List {
             Section {
-                Button(action: onInvite) {
+                NavigationLink(value: InviteRoute(
+                    groupId: model.groupId,
+                    groupName: model.groupName,
+                    inviteCode: model.inviteCode,
+                    isAdmin: model.isAdmin
+                )) {
                     Label("Invite Members", systemImage: "person.badge.plus")
                 }
             }
@@ -91,6 +97,19 @@ struct GroupDetailView: View {
         }
         .navigationTitle(model.groupName)
         .navigationBarTitleDisplayMode(.inline)
+        .navigationDestination(for: InviteRoute.self) { route in
+            InviteScreenView(
+                groupId: route.groupId,
+                groupName: route.groupName,
+                inviteCode: route.inviteCode,
+                isAdmin: route.isAdmin,
+                groupRepository: groupRepository
+            )
+            // Regenerating changes the code this screen seeds the route with, so
+            // re-fetch on the way back — the same parent-owned `.onDisappear` the
+            // group list uses for this screen (ADR-0100).
+            .onDisappear { Task { await model.refresh() } }
+        }
         .toolbar {
             if model.isAdmin {
                 ToolbarItem(placement: .primaryAction) {
@@ -228,6 +247,17 @@ struct GroupDetailView: View {
         id: UUID(), userId: UUID(), groupId: UUID(), role: .member,
         joinedAt: .now, displayName: "Member name", avatarUrl: nil
     )
+}
+
+/// What the Invite screen is pushed with: a navigation value carrying exactly the
+/// state this screen has already loaded, not a domain model. The code lets the
+/// Invite screen render immediately, and `isAdmin` is the freshly-derived role
+/// (ADR-0100) rather than the possibly-stale `GroupSummary.role`.
+private struct InviteRoute: Hashable {
+    let groupId: UUID
+    let groupName: String
+    let inviteCode: String
+    let isAdmin: Bool
 }
 
 /// Circular initials placeholder (real avatars arrive with networking, Task 26).

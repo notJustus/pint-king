@@ -54,6 +54,11 @@ final class GroupDetailViewModel {
     /// renders immediately, then kept in step with loads and renames.
     private(set) var groupName: String
 
+    /// The group's current invite code — seeded from the row that opened this
+    /// screen and refreshed by every fetch, so the Invite screen (Task 23) can be
+    /// pushed with the right code instead of fetching the same detail again.
+    private(set) var inviteCode: String
+
     /// The group's members, in the order the repository returns them (join order).
     /// Empty until `load()` runs.
     private(set) var members: [GroupMember] = []
@@ -99,6 +104,7 @@ final class GroupDetailViewModel {
     ) {
         self.groupId = group.id
         self.groupName = group.name
+        self.inviteCode = group.inviteCode
         self.groupRepository = groupRepository
         self.userRepository = userRepository
     }
@@ -173,6 +179,7 @@ final class GroupDetailViewModel {
             return
         }
         groupName = detail.group.name
+        inviteCode = detail.group.inviteCode
         members = detail.members
     }
 
