@@ -134,6 +134,7 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0098 | Create Group is a self-presented sheet owned by each entry point (Group List + Home switcher); success relies on the repo's active-group side effect for navigation | Accepted (revisit) |
 | 0099 | Join flow is two screens: local format validation on code entry, with the join (and all of 404/409/403) performed on the confirmation screen — which shows the invite code, not the group name, as no API resolves a code before joining | Accepted (revisit) |
 | 0100 | Group Detail derives the caller's role from the freshly-loaded member list (not the `GroupSummary` that opened it); the three leave outcomes are a `LeaveOutcome` enum computed client-side and gated in `leave()`; the group list refreshes on the destination's `onDisappear` | Accepted (revisit) |
+| 0101 | The invite code is the Invite screen's only state — link and QR are derived from it; the link format lives in one `InviteLink` namespace shared with the deep-link parser; the screen takes code + `isAdmin` as inputs from Group Detail rather than re-fetching | Accepted (revisit) |
 
 ---
 
@@ -2529,3 +2530,46 @@ Task 22 (tasks-ios.md, requirements §5.11–5.13 and §5.17–5.18, l3-ios-app.
 - `GroupSummary` is now `Hashable`, joining `User` (ADR-0094) as a domain model that doubles as a navigation value.
 - The Invite screen (Task 23) is the screen's one remaining inert closure (`onInvite`).
 - **Revisit when:** Task 26 wires the real API — `removeMember`/`promoteMember`/`updateGroupName` will return 403 for a non-admin, which the current generic error copy would render as "Couldn't remove that member"; that is the point to decide whether a stale-role 403 deserves its own message and a forced reload. Task 23 replaces `onInvite` with a push destination.
+
+
+---
+
+## ADR-0101: The invite code is the Invite screen's only state (link and QR are derived); the link format lives in one `InviteLink` namespace; the screen takes its inputs from Group Detail rather than re-fetching
+
+Status: Accepted (revisit)
+Date: 2026-08-01
+
+### Context
+Task 23 (tasks-ios.md, requirements §5.4 and §5.10, l3-ios-app.md §"Regenerate Invite Code") builds the Invite screen: it shows a group's invite code, the invite link derived from it, and a QR code of that link, offers a share sheet, and lets an admin regenerate the code — which invalidates the old code, link, and QR immediately (Property 12). Three questions came up.
+
+1. **Three displays, one fact.** Code, link, and QR are three renderings of the same thing. A regeneration must move all three, and there must be no window in which the screen shows a code and a QR that disagree.
+2. **Who owns the link format?** `https://pintking.app/join/{code}` is written here for the first time, but Task 28 (the deep-link handler) has to parse a code back out of the very same shape.
+3. **Where do the code and "am I an admin?" come from?** ADR-0100 argued that Group Detail must *not* trust the `GroupSummary.role` snapshot that opened it, because that screen changes roles. Does the same argument force the Invite screen to fetch again?
+
+### Decision
+**`inviteCode` is the view model's only mutable state; `inviteLink` and the QR are consequences of it.** `inviteLink` is a computed property (`InviteLink.url(for: inviteCode)`) and the QR is a cached rendering of that link, refreshed at exactly the two points the code is set: `init` and the end of a successful `regenerate()`. So regeneration assigns one property and all three displays follow — a disagreeing code and QR is unrepresentable rather than merely avoided. The QR is cached in a stored `qrCode` property rather than computed on read, because SwiftUI reads properties on every body evaluation and each read is CoreImage work.
+
+**The link format lives in `InviteLink`, a pure `Utilities` namespace** (the shape of `InitialsGenerator` / `ImageValidator`), holding `host`, `pathPrefix`, and `url(for:)`. Task 28's parser will be its inverse, in the same file. Two features sit on opposite ends of this format; keeping both in one type makes the round-trip a property of the type rather than a convention two features happen to share. `url(for:)` returns a non-optional `URL`: `URLComponents` percent-encodes whatever it is handed, so construction cannot fail — and codes are 8 alphanumerics anyway (Property 10).
+
+**QR rendering is a pure `QRCodeGenerator` namespace, not view code**, so it is unit-testable: `image(for:scale:)` runs `CIFilter.qrCodeGenerator`, scales the module grid with an affine transform *before* rasterising (CoreImage emits one pixel per module, which scales up blurry), and returns a `UIImage`. Tests scan the result back with a test-only `QRDecoder` (CoreImage's `CIDetector`), so what is asserted is that *a scanner reads the right link*, not that pixels were produced.
+
+**The screen takes `inviteCode` and `isAdmin` as immutable inputs from Group Detail, and does not fetch.** ADR-0100's argument does not extend here: it was about a screen that *mutates* the fact it was handed, where the handed value was a snapshot from an earlier list fetch. Group Detail has just fetched the detail, derives `isAdmin` from that fresh member list, and now also keeps `inviteCode` from it — so the Invite screen is handed current data, and nothing but its own Regenerate button can change the code while it is open. The push is value-based on a private `InviteRoute` (`groupId`, `groupName`, `inviteCode`, `isAdmin`) — a navigation value carrying exactly the loaded state, not a DTO, the same shape as `MemberRoute` (ADR-0088). Group Detail attaches `.onDisappear { refresh() }` to that destination, so a regeneration propagates back up — the same parent-owned refresh the group list uses for Group Detail itself (ADR-0100).
+
+**`regenerate()` guards on `isAdmin`** rather than relying on the view not to draw the button, mirroring `GroupDetailViewModel.leave()`'s `.promoteFirst` guard and `MyPintsViewModel.canDelete(_:)`: the API is the authority, the client mirrors the rule so the affordance and the action agree. The confirmation copy is a `static let` on the view model (so the warning lives with the action it guards); whether the dialog is up stays view `@State`, as with Group Detail's leave and remove prompts.
+
+### Alternatives Considered
+- **Store the link and the QR as separate properties, updated alongside the code:** rejected — three properties that must be kept in step is exactly the bug this screen can have. Deriving them makes the invariant structural.
+- **Compute the QR as a plain computed property:** rejected — correct, but re-runs CoreImage on every SwiftUI body evaluation. Caching it at the two assignment points keeps the derivation obvious while paying for it once per code.
+- **Build the link inline in the view model (string interpolation):** rejected — Task 28 would then write the format a second time, in a parser, with nothing tying the two together.
+- **Re-fetch `getGroupDetail` on appear to get a fresh code and role:** rejected as a redundant round-trip. The only actor that can change this group's code while the screen is open is the screen itself; a second device rotating the code concurrently is a real-time-sync problem the app does not solve anywhere else.
+- **Pass the whole `GroupSummary` as the route value:** rejected — it carries `role`, the stale field ADR-0100 deliberately stopped trusting, and lacks the freshly-derived `isAdmin`. The route carries what Group Detail actually loaded.
+- **Render the QR with a SwiftUI-only approach (no CoreImage helper) inside the view:** rejected — it would put the one piece of genuinely testable logic on this screen out of reach of a unit test.
+- **Show the QR without a fixed white backing:** rejected — scanners need dark modules on a light field, so the card is `.white` in both colour schemes rather than a semantic background that inverts in dark mode.
+
+### Consequences
+- 16 new tests (8 `InviteScreenViewModelTests`, 3 `InviteLinkTests`, 4 `QRCodeGeneratorTests`, 1 `GroupDetailViewModelTests` for the refreshed code). Full suite **276 pass**.
+- QR tests assert a real round-trip (generate → `CIDetector` → same string), so a silently corrupt or blank code fails the suite rather than the App Store.
+- `GroupDetailViewModel` gained `inviteCode`, seeded from the `GroupSummary` and refreshed by every fetch; `GroupDetailView` lost its last inert closure (`onInvite`) and is now closure-free, like the group list before it (ADR-0100).
+- `MockGroupRepository` gained `shouldFailRegenerate` (throwing `.serverError`), joining `shouldFailCreate` / `shouldFailLogin` / `shouldFailDelete`.
+- `InviteLink` is written but only half-used: Task 28 supplies the parser and the `apple-app-site-association` file must be served from `pintking.app` before any real link resolves. Until then the link is shareable but only the 8-character code path actually joins a group.
+- **Revisit when:** Task 26 wires the real API — `regenerateInviteCode` will return 403 for a stale-admin caller, which the current generic copy renders as "Couldn't regenerate the invite code"; that is the point to decide whether a role change mid-session deserves its own message and a forced reload (the same open question ADR-0100 left for the admin actions). Task 28 also decides whether `InviteLink` grows a `code(from:)` inverse here or a fuller route parser.
