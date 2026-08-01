@@ -132,6 +132,7 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0096 | Settings screen: account deletion delegates to `AuthRepository.deleteAccount()` (session-clear returns to Login via the RootView gate); the location row is read-only, reflecting a new `status` on `LocationPermissionRequesting` and deep-linking to iOS Settings | Accepted (revisit) |
 | 0097 | Group list fetch returns a new `GroupSummary` (role + memberCount, matching GET /groups) instead of `Group`; Group List navigates value-based via `ProfileRoute.groupList` with inert Create/Join/Detail closures | Accepted (revisit) |
 | 0098 | Create Group is a self-presented sheet owned by each entry point (Group List + Home switcher); success relies on the repo's active-group side effect for navigation | Accepted (revisit) |
+| 0099 | Join flow is two screens: local format validation on code entry, with the join (and all of 404/409/403) performed on the confirmation screen — which shows the invite code, not the group name, as no API resolves a code before joining | Accepted (revisit) |
 
 ---
 
@@ -2451,3 +2452,39 @@ Task 20 (tasks-ios.md, requirements §5.1–5.2, l3-ios-app.md §"Group Manageme
 - `GroupListView` and `GroupSwitcherView` lost their `onCreate` init parameter; no external caller passed one (both were defaulted `{}`), so no call sites changed. Their `onJoin` closures remain inert until Task 21.
 - `MockGroupRepository` gained a `shouldFailCreate` knob (mirrors `shouldFailLogin`/`shouldFailDelete`) so the limit path is testable without a backend.
 - **Revisit when:** Task 21 (Join Group) may want the same self-presenting-sheet treatment for its own entry points; Task 26 wires the real `createGroup` and may distinguish the 99-limit 422 from other validation failures (e.g. a name the server rejects) with more specific copy.
+
+
+---
+
+## ADR-0099: The Join Confirmation performs the join and shows the invite code, not the group name; code entry validates format only
+
+Status: Accepted (revisit)
+Date: 2026-08-01
+
+### Context
+Task 21 (tasks-ios.md, l3-ios-app.md §"Join via Manual Code Entry") builds the two-screen join flow: a Join Group screen with a field for an 8-character invite code, and a Join Confirmation screen with confirm/cancel. The design's screen table specifies the confirmation copy as **"Join [Group Name]?"**, and the flow reads `enter code → API validates → Join Confirmation → confirm → set as Active_Group → Home`.
+
+That copy needs a group *name* before the user has joined — but the API exposes exactly one code-resolving endpoint, `POST /groups/join`, which joins as its only effect. There is no lookup-by-invite-code endpoint, and by design there cannot be a cheap one: invite codes are the only handle on an invite-only group, so resolving a code to a name for an arbitrary caller would leak group names to anyone brute-forcing the 8-character space. Every join outcome is therefore only knowable *from the join attempt itself* (Property 11: 404 unknown code, 409 already a member, 403 removed from that group). The same constraint applies to the deep-link entry path (Task 24), which lands on this same confirmation screen with nothing but a code.
+
+### Decision
+**Split the flow by what each half can know.** `JoinGroupViewModel` (code entry) does no networking at all: its `inviteCode` setter normalises every keystroke and paste into the invite-code alphabet — strip non-alphanumerics, uppercase, cap at 8 (Property 10) — so the field can never hold something malformed, and `isCodeValid` is then just a length check. `submit()` publishes the code as `confirmingCode`, which pushes the confirmation. This is the same "the property enforces its own bounds in `didSet`" trick as `PostCaptureViewModel`'s 280-character note cap, and it means the view does no filtering of its own.
+
+**`JoinConfirmationViewModel` owns the join and every failure.** It takes the code as an immutable `let` input (the screen exists to confirm one specific code — it is not state), calls `groupRepository.joinGroup(inviteCode:)`, and maps the three documented outcomes to copy: `.notFound` → "Group not found. Check the invite code and try again.", `.conflict` → "You're already a member of this group.", `.forbidden` → "You have been removed from this group and can't rejoin." On success it stores `joinedGroup`, which the view observes to dismiss the flow.
+
+**The confirmation shows the invite code, not the group name** — a deliberate deviation from the design's "Join [Group Name]?" copy, forced by the missing lookup endpoint (see Alternatives). The screen still earns its place: it is the deliberate confirm step before a membership is created, and it is the single place all three failures surface, shared by manual entry and deep links.
+
+**Self-presenting sheet, per ADR-0098.** `JoinGroupView` wraps its own `NavigationStack` with a Cancel and a Continue, and pushes `JoinConfirmationView` onto that same stack via `.navigationDestination(item:)` — bound through a read-through/write-via-method `Binding` so the nav stack can hand `nil` back on a pop while the view model still owns the value (the leaderboard period-picker pattern). `GroupListView` and `GroupSwitcherView` drop their last inert `onJoin` closures and present the sheet from a local `@State`, exactly as they do for Create. As with Create, a successful join needs no navigation call: `joinGroup` sets the joined group active, and Home reads `activeGroup` live (ADR-0086), so it re-renders into the new group's leaderboard once the sheet dismisses.
+
+### Alternatives Considered
+- **Add a `previewGroup(inviteCode:)` repository method + a new `GET /groups/preview?code=` endpoint:** rejected — it invents backend surface from an iOS task, and an unauthenticated-ish name lookup over an 8-character keyspace is an enumeration oracle for a deliberately invite-only product. If the name is judged essential, that is an API design decision with its own rate-limiting/authorisation questions, not a side effect of building a form.
+- **Resolve the name via the mock (which *can* map `joinableInviteCode` → "The Locals") and accept a broken real path:** rejected — the mock exists to stand in for the API's behaviour, not to grant capabilities the API lacks. It would produce a screen that works in the simulator and breaks at Task 26.
+- **One screen: type the code and join immediately, no confirmation:** rejected — the design calls for a confirm step (and the deep-link flow *needs* one: an externally-tapped link must not silently join a group). It would also leave the deep-link path with no screen to land on.
+- **Join on the entry screen and use the confirmation as a post-join "You joined X!" success screen:** rejected — this *would* show the real group name, but a "Cancel" on it would be a lie (the membership already exists), and it inverts the confirm step into a receipt.
+- **Validate the code's format silently and let the confirmation appear only after a successful join attempt:** rejected — that is the previous option in disguise; the join is the irreversible act being confirmed.
+
+### Consequences
+- 16 new tests (9 `JoinGroupViewModelTests` for normalisation/validation/hand-off, 7 `JoinConfirmationViewModelTests` for the success path plus all three failures). Full suite **247 pass**.
+- **The user learns a code is bad one tap later than ideal:** a typo'd code passes format validation and only fails on the confirmation screen. The back button returns to the field with the code intact (`cancelConfirmation()` clears only `confirmingCode`), so it can be corrected rather than retyped.
+- `MockGroupRepository.joinGroup` gained a 403 case via a new `MockData.blockedInviteCode` ("BLOCKED1"), so all three of Property 11's failures are reachable without a backend. The 409 needs no knob — any existing group's code produces it naturally.
+- `GroupListView` and `GroupSwitcherView` are now closure-free for group creation/joining; `GroupListView`'s only remaining inert closure is `onSelect` (Group Detail, Task 22).
+- **Revisit when:** Task 24 (deep links) lands on this same confirmation screen and may make the missing name more visible — that is the point to decide whether the API grows an authenticated, rate-limited code-preview endpoint. If it does, only `JoinConfirmationViewModel` changes (fetch a name on appear); the flow's shape stays.
