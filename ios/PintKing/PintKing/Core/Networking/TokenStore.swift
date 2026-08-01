@@ -8,8 +8,8 @@
 //  expires — but AuthRepository (which owns the *user-visible* session) will be
 //  built on top of NetworkClient, so the client cannot depend on it without a
 //  cycle. This protocol is the seam: the client reads and writes tokens, and
-//  whoever owns storage decides where they actually sit. Task 27 swaps the
-//  in-memory implementation for a Keychain-backed one; nothing else changes.
+//  whoever owns storage decides where they actually sit. `KeychainTokenStore`
+//  (Task 27) is the real one; the in-memory store below is now a test double.
 //
 
 import Foundation
@@ -29,8 +29,8 @@ protocol TokenStoring: AnyObject, Sendable {
     func clear()
 }
 
-/// Process-lifetime token storage. Used until the Keychain wrapper lands, and
-/// by tests, which want a store they can seed and inspect.
+/// Process-lifetime token storage — a test double, for suites that want a store
+/// they can seed and inspect without touching the system keychain.
 final class InMemoryTokenStore: TokenStoring, @unchecked Sendable {
     private let lock = NSLock()
     private var tokens: Tokens?
