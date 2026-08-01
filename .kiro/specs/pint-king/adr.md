@@ -136,6 +136,7 @@ What are the trade-offs? What becomes easier? What becomes harder?
 | 0100 | Group Detail derives the caller's role from the freshly-loaded member list (not the `GroupSummary` that opened it); the three leave outcomes are a `LeaveOutcome` enum computed client-side and gated in `leave()`; the group list refreshes on the destination's `onDisappear` | Accepted (revisit) |
 | 0101 | The invite code is the Invite screen's only state — link and QR are derived from it; the link format lives in one `InviteLink` namespace shared with the deep-link parser; the screen takes code + `isAdmin` as inputs from Group Detail rather than re-fetching | Accepted (revisit) |
 | 0102 | The map endpoint gets its own `MapPin` model (author joined in, location non-optional) rather than reusing `PintLog`; the viewport lives in the view model as a `MapBoundingBox`, converted from the settled map camera region; the first load asks for the whole world so the camera has pins to frame | Accepted (revisit) |
+| 0103 | The map's selected pin is view-model state, not view `@State`, because it must be reconciled against every re-fetch — a pin the latest query no longer returns takes its callout with it; the callout itself is a popover anchored to the annotation, so the system supplies the anchoring and the tap-outside dismissal | Accepted (revisit) |
 
 ---
 
@@ -2620,3 +2621,38 @@ Task 24 (tasks-ios.md, requirements §6.8, l3-ios-app.md §"Home Tab") builds th
 - `HomeView` now takes a fourth repository and hosts the section picker; `mapRepository` is threaded `PintKingApp → RootView → ContentView → HomeView`.
 - Avatar pins are initials placeholders, like every other avatar in the app, until networking (Task 26). Tapping a pin does nothing until Task 25 adds the callout.
 - **Revisit when:** (a) Task 26 wires the real API — an unbounded first query over a large group is a real cost, and that is the point to decide between an initial fetch capped to a sensible radius, a server-side pin limit, or waiting for the map's first reported region; (b) Task 25 adds the callout, which needs the pin's photo and so is the first consumer of `MapPin.photoUrl`; (c) clustering, if a dense group makes overlapping pins unreadable.
+
+
+---
+
+## ADR-0103: The map's selected pin is view-model state (reconciled against every re-fetch); the callout is a popover anchored to the annotation
+
+Status: Accepted (revisit)
+Date: 2026-08-01
+
+### Context
+Task 25 (tasks-ios.md, requirements §6.7, l3-ios-app.md §Screens) adds the callout: tapping a map pin shows that pint's photo thumbnail, drink type, note, and timestamp, and tapping outside dismisses it. Two questions.
+
+1. **Where does "which pin is selected" live?** The precedent cuts both ways. The member history screen's full-size photo viewer is view `@State` (`viewedPint`, Task 10), and Group Detail's "which prompt is up" is view `@State` (ADR-0100) — both on the grounds that a presentation flag with no rules attached does not earn a place in the view model.
+2. **How is the callout presented?** The task says "popover or overlay anchored to the pin", and either a system popover or a hand-rolled card over the map would satisfy the requirement's list of fields.
+
+### Decision
+**The selection lives in `MapViewModel` (`selectedPin: MapPin?`, `selectPin(_:)`, `dismissCallout()`), because unlike those precedents it has a rule.** The map re-queries constantly — every settled pan, every scope toggle, every group switch — and the pins that come back are a different set each time. A callout anchored to a pin the latest fetch no longer returns is a callout hanging over empty water. So `load()` ends in `reconcileSelection()`: if the selected pin's id is absent from the new results the selection is cleared, and if it is present the selection is swapped for the freshly fetched copy so the callout cannot show details the map has since re-read differently. That reconciliation is the load-bearing part, and it is testable exactly because the state is in the view model — the two behaviours it produces (pan away dismisses; a re-fetch that still contains the pin keeps it open) are two of the six new tests. Selecting a second pin simply replaces the first, because there is one selection, not a set.
+
+**The callout is a `.popover` attached to the `Annotation`'s content, with `.presentationCompactAdaptation(.popover)`.** Anchoring to the pin and dismissing on an outside tap are then the system's job rather than ours — no tap-catching background view, no manual anchor arithmetic against the map's projection. The per-pin `Binding<Bool>` reads through to the model's single selection (so opening one callout closes any other by construction) and its setter only ever fires with `false`, which is precisely the system reporting an outside tap; it routes straight to `dismissCallout()`, so dismissal has one implementation. Without the compact-adaptation modifier the popover would become a sheet on iPhone and lose the anchor that makes it a callout.
+
+**The callout is read-only** — thumbnail, author, note, drink type, relative timestamp, fixed to a 280pt card so a long note cannot stretch the popover to the screen edge. No delete, no edit, even on your own pints: those live on My Pints (Task 17), and the map is a browsing surface.
+
+### Alternatives Considered
+- **View `@State` for the selection, like the history screen's photo viewer:** rejected — that viewer's list is static while it is open, so nothing can invalidate the selection. Here the underlying collection is replaced on every gesture, and the view would have to re-implement the reconciliation in an `.onChange(of: model.pins)`, in the one place it cannot be unit-tested.
+- **A card pinned to the bottom of the map plus a transparent tap-catcher:** rejected — more code for less: we would own the anchoring, the dismissal, and the z-ordering against the existing empty-state capsule, and the card would not point at the pin it describes.
+- **A `.sheet(item:)` keyed on the selected pin:** rejected — a sheet covers the map, so you lose sight of the pin and its neighbours, which is the whole reason for looking at a map. This is the same reason the task asks for a popover.
+- **Keep the selection but do not reconcile it, letting the callout close only on an explicit tap:** rejected — it is representable-but-wrong state (a callout for a pin that is not drawn), the class of bug ADR-0101 avoided by deriving the QR from the code.
+- **Re-centre the camera on the tapped pin:** rejected — the user tapped something already on screen; moving the map under them to show it is disorienting, and it would fire another region change and re-fetch.
+
+### Consequences
+- 6 new `MapViewModelTests` cases (open, dismiss, replace, pan-away-dismisses, re-fetch-keeps, scope-change-dismisses). Full suite **294 pass**.
+- `MapPin.photoUrl` gets its first consumer, closing one of ADR-0102's revisit points — as a placeholder thumbnail for now, since remote images need the networking layer (Task 26).
+- `load()`'s no-active-group branch now also reconciles, so switching to a group with no pints closes an open callout rather than leaving one over a cleared map.
+- The popover renders inside a MapKit annotation, so a pin near the screen edge relies on the system to flip the arrow edge; that behaviour is only verifiable on device/simulator, not in the unit tests.
+- **Revisit when:** (a) Task 26 wires real photos — the thumbnail becomes an async image load, and a callout opened before it resolves needs a loading state; (b) clustering, if it lands, changes what a tap means (a cluster has no single pint to show); (c) the callout ever grows an action, at which point "read-only browsing surface" stops being true and it likely wants to become a navigation destination instead.
